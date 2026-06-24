@@ -1,8 +1,7 @@
 import logging
-import mimetypes
 import os
 
-from django.http import FileResponse, Http404
+from django.http import FileResponse
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions
