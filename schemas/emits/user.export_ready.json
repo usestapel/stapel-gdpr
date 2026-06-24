@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.export_ready",
+  "description": "Data export archive is ready for download.",
+  "type": "object",
+  "required": ["user_id", "request_id", "download_expires_at"],
+  "properties": {
+    "user_id":             { "type": "integer" },
+    "request_id":          { "type": "integer" },
+    "download_expires_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

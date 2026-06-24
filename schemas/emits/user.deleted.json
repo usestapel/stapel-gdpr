@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.deleted",
+  "description": "All user PII permanently deleted after grace period. Every package storing user data must subscribe.",
+  "type": "object",
+  "required": ["user_id", "deleted_at", "trigger"],
+  "properties": {
+    "user_id":    { "type": "integer" },
+    "deleted_at": { "type": "string", "format": "date-time" },
+    "trigger":    { "type": "string", "enum": ["manual", "inactivity", "platform"] }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.deletion_initiated",
+  "description": "Account closure started. 30-day grace period begins; account is deactivated.",
+  "type": "object",
+  "required": ["user_id", "grace_ends_at", "trigger"],
+  "properties": {
+    "user_id":       { "type": "integer" },
+    "grace_ends_at": { "type": "string", "format": "date-time" },
+    "trigger":       { "type": "string", "enum": ["manual", "inactivity", "platform"] }
+  },
+  "additionalProperties": false
+}

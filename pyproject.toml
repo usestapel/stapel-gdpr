@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "stapel-gdpr"
+version = "0.1.0"
+description = "GDPR data export and account deletion Django app for the Stapel framework"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+keywords = ["django", "stapel", "gdpr", "privacy", "data-export", "right-to-erasure"]
+classifiers = [
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "stapel-core>=0.1.0",
+    "celery>=5.3",
+]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.34"]       # for S3-backed staging in microservices mode
+all = ["stapel-gdpr[s3]"]
+
+[tool.setuptools]
+package-dir = {"stapel_gdpr" = "."}
+packages = ["stapel_gdpr", "stapel_gdpr.migrations"]
+
+[tool.setuptools.package-data]
+stapel_gdpr = ["migrations/*.py", "migrations/**/*.py"]
