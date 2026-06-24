@@ -5,8 +5,6 @@ Monolith:  calls providers directly in-process.
 Microservices: providers in remote services handle their own data via bus events;
                this orchestrator handles the local portion + assembly coordination.
 """
-import io
-import json
 import logging
 import zipfile
 from pathlib import Path
@@ -16,7 +14,7 @@ from django.utils import timezone
 
 from stapel_core.gdpr import gdpr_registry
 
-from .models import AccountClosureRequest, DataExportPart, DataExportRequest, ReRegistrationHash
+from .models import AccountClosureRequest, DataExportPart, DataExportRequest
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +95,6 @@ class GDPROrchestrator:
             self._assemble_zip(req, staging_dir, partial=True)
 
     def _assemble_zip(self, req: DataExportRequest, staging_dir: Path, partial: bool = False) -> None:
-        from django.utils.timezone import now
 
         archive_root = Path(getattr(settings, 'GDPR_ARCHIVE_ROOT', '/tmp/gdpr_exports'))
         archive_root.mkdir(parents=True, exist_ok=True)
