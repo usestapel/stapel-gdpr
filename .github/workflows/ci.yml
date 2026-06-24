@@ -14,11 +14,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Install stapel-core
+        run: pip install git+https://github.com/usestapel/stapel-core.git
       - name: Install
-        run: pip install -e ".[all]" 2>/dev/null || pip install -e .
+        run: pip install -e ".[all]" || pip install -e .
       - name: Lint
         run: |
           pip install ruff --quiet
           ruff check . --select E,F,W --ignore E501
       - name: Import check
-        run: python -c "import $(basename $(pwd)); print('OK')"
+        run: python -c "import stapel_gdpr; print('import OK')"
