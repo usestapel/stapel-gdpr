@@ -123,7 +123,7 @@ class ReRegistrationHash(models.Model):
 
     hash_type   = models.CharField(max_length=10, choices=TYPE_CHOICES)
     hash_value  = models.CharField(max_length=128, db_index=True)
-    user_id_was = models.BigIntegerField()
+    user_id_was = models.CharField(max_length=64)  # str(pk) — supports both int and UUID PKs
     created_at  = models.DateTimeField(auto_now_add=True)
     expires_at  = models.DateTimeField()    # +24 months
 
