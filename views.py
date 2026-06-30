@@ -8,7 +8,7 @@ from rest_framework import permissions
 from rest_framework.request import Request
 from rest_framework.views import APIView
 
-from stapel_core.django.errors import IronErrorResponse, IronResponse, error_500_internal
+from stapel_core.django.api.errors import IronErrorResponse, IronResponse, error_500_internal
 
 from .dto import ClosureStatusDTO, ExportRequestDTO, ExportStatusDTO
 from .errors import (
@@ -216,7 +216,7 @@ class ExportPartReadyView(APIView):
 
     @extend_schema(exclude=True)
     def post(self, request: Request, request_id: int):
-        from stapel_core.django.permissions import IsServiceRequest
+        from stapel_core.django.api.permissions import IsServiceRequest
         if not IsServiceRequest().has_permission(request, self):
             return IronErrorResponse(403, 'error.403.forbidden')
 

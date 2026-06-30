@@ -1,4 +1,4 @@
-from stapel_core.django.errors import register_service_errors
+from stapel_core.django.api.errors import register_service_errors
 
 ERR_409_EXPORT_COOLDOWN     = 'error.409.gdpr.export_cooldown'
 ERR_409_CLOSURE_PENDING     = 'error.409.gdpr.closure_already_pending'
