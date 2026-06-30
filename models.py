@@ -20,12 +20,14 @@ class DataExportRequest(models.Model):
 
     user_id             = models.BigIntegerField(db_index=True)
     status              = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # UUID used as the bus correlation key — links this request to service completion events.
+    correlation_id      = models.CharField(max_length=36, unique=True, null=True, blank=True, db_index=True)
     # Immutable list of services expected to contribute (snapshot at request time)
     expected_services   = models.JSONField(default=list)
     archive_path        = models.CharField(max_length=500, null=True, blank=True)
     download_token      = models.CharField(max_length=64, unique=True, null=True, blank=True)
     created_at          = models.DateTimeField(auto_now_add=True)
-    deadline            = models.DateTimeField()        # created_at + 48 h
+    deadline            = models.DateTimeField()        # created_at + 24 h
     download_expires_at = models.DateTimeField(null=True, blank=True)  # +7 days after ready
     error               = models.TextField(null=True, blank=True)
 
@@ -66,6 +68,9 @@ class DataExportPart(models.Model):
     request      = models.ForeignKey(DataExportRequest, on_delete=models.CASCADE, related_name='parts')
     service      = models.CharField(max_length=50)   # section name: 'auth', 'profiles', 'cdn' …
     status       = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    # Object storage path where the service uploaded its export (microservices mode).
+    # Null in monolith mode where the orchestrator writes to staging_dir directly.
+    bucket_path  = models.CharField(max_length=500, null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     error        = models.TextField(null=True, blank=True)
 

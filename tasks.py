@@ -22,13 +22,23 @@ logger = logging.getLogger(__name__)
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
 def run_data_export(self, request_id: int):
-    """Generate export archive for a single request."""
+    """Generate export archive for a single request (monolith mode)."""
     from .orchestrator import gdpr_orchestrator
     try:
         gdpr_orchestrator.run_export(request_id)
     except Exception as e:
         logger.error('run_data_export failed [request=%s]: %s', request_id, e)
         raise self.retry(exc=e)
+
+
+@shared_task
+def sweep_pending_exports():
+    """Assemble partial archives for export requests that have exceeded their 24h deadline.
+
+    Runs hourly. Catches services that went down mid-export or simply never responded.
+    """
+    from .orchestrator import gdpr_orchestrator
+    gdpr_orchestrator.sweep_deadlines()
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +176,13 @@ def notify_llm_providers_of_deletion(user_id: int, providers_used: list[str]):
 def get_gdpr_beat_schedule() -> dict:
     """Add to CELERY_BEAT_SCHEDULE in your Django settings."""
     return {
+        'gdpr-export-deadline-sweep': {
+            'task': 'stapel_gdpr.tasks.sweep_pending_exports',
+            'schedule': crontab(minute=0),          # every hour
+        },
         'gdpr-account-closure-worker': {
             'task': 'stapel_gdpr.tasks.process_expired_grace_periods',
-            'schedule': crontab(minute=0),          # every hour
+            'schedule': crontab(minute=30),         # every hour at :30
         },
         'gdpr-inactivity-checker': {
             'task': 'stapel_gdpr.tasks.check_inactive_accounts',

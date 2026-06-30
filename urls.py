@@ -1,5 +1,5 @@
 from django.urls import path
-from stapel_core.django.swagger import get_app_swagger_urls
+from stapel_core.django.openapi.swagger import get_app_swagger_urls
 
 from .views import (
     AccountCancelCloseView,
