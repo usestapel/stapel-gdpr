@@ -1,17 +1,17 @@
-from stapel_core.django.api.serializers import IronDataclassSerializer
+from stapel_core.django.api.serializers import StapelDataclassSerializer
 from .dto import ClosureStatusDTO, ExportRequestDTO, ExportStatusDTO
 
 
-class ExportRequestSerializer(IronDataclassSerializer):
+class ExportRequestSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = ExportRequestDTO
 
 
-class ExportStatusSerializer(IronDataclassSerializer):
+class ExportStatusSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = ExportStatusDTO
 
 
-class ClosureStatusSerializer(IronDataclassSerializer):
+class ClosureStatusSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = ClosureStatusDTO
