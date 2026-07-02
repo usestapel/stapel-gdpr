@@ -37,3 +37,10 @@ packages = [
 [tool.setuptools.package-data]
 stapel_gdpr = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
 
+[tool.coverage.run]
+omit = [
+    "*/tests/*",
+    "*/conftest.py",
+    "*/migrations/*",
+]
+

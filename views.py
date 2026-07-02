@@ -34,13 +34,35 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
+class GDPRAPIView(APIView):
+    """Base view exposing serializer seams.
+
+    Every concrete view declares ``request_serializer_class`` /
+    ``response_serializer_class`` (``None`` when that direction carries no
+    serialized payload). Subclasses may swap either class attribute — or
+    override the getters — to customize the request/response envelopes
+    without rewriting the method bodies.
+    """
+
+    request_serializer_class = None
+    response_serializer_class = None
+
+    def get_request_serializer_class(self):
+        return self.request_serializer_class
+
+    def get_response_serializer_class(self):
+        return self.response_serializer_class
+
+
 # =============================================================================
 # Data export — GDPR Art. 15 / 20
 # =============================================================================
 
 
-class DataExportRequestView(APIView):
+class DataExportRequestView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ExportRequestSerializer
 
     @extend_schema(
         summary="Request personal data export",
@@ -66,11 +88,13 @@ class DataExportRequestView(APIView):
             status=export_req.status,
             message="Your archive will be ready within 48 hours. We will notify you when it is done.",
         )
-        return StapelResponse(ExportRequestSerializer(dto), status=202)
+        return StapelResponse(self.get_response_serializer_class()(dto), status=202)
 
 
-class DataExportStatusView(APIView):
+class DataExportStatusView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ExportStatusSerializer
 
     @extend_schema(
         summary="Get data export status",
@@ -107,11 +131,14 @@ class DataExportStatusView(APIView):
             download_available=is_ready and bool(export_req.download_token),
             expires_at=expires_at,
         )
-        return StapelResponse(ExportStatusSerializer(dto))
+        return StapelResponse(self.get_response_serializer_class()(dto))
 
 
-class DataExportDownloadView(APIView):
+class DataExportDownloadView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    # Token travels as a raw query param / body field; the payload is a file.
+    request_serializer_class = None
+    response_serializer_class = None
 
     @extend_schema(
         summary="Download data export archive",
@@ -182,8 +209,10 @@ class DataExportDownloadView(APIView):
 # =============================================================================
 
 
-class AccountCloseView(APIView):
+class AccountCloseView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ClosureStatusSerializer
 
     @extend_schema(
         summary="Initiate account closure",
@@ -206,11 +235,13 @@ class AccountCloseView(APIView):
             grace_ends_at=closure.grace_ends_at.isoformat(),
             can_cancel=True,
         )
-        return StapelResponse(ClosureStatusSerializer(dto), status=202)
+        return StapelResponse(self.get_response_serializer_class()(dto), status=202)
 
 
-class AccountCancelCloseView(APIView):
+class AccountCancelCloseView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ClosureStatusSerializer
 
     @extend_schema(
         summary="Cancel account closure during grace period",
@@ -228,11 +259,13 @@ class AccountCancelCloseView(APIView):
             grace_ends_at=closure.grace_ends_at.isoformat(),
             can_cancel=False,
         )
-        return StapelResponse(ClosureStatusSerializer(dto))
+        return StapelResponse(self.get_response_serializer_class()(dto))
 
 
-class AccountCloseStatusView(APIView):
+class AccountCloseStatusView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ClosureStatusSerializer
 
     @extend_schema(
         summary="Get account closure status",
@@ -257,7 +290,7 @@ class AccountCloseStatusView(APIView):
             grace_ends_at=closure.grace_ends_at.isoformat(),
             can_cancel=closure.status == AccountClosureRequest.STATUS_GRACE,
         )
-        return StapelResponse(ClosureStatusSerializer(dto))
+        return StapelResponse(self.get_response_serializer_class()(dto))
 
 
 # =============================================================================
@@ -265,8 +298,12 @@ class AccountCloseStatusView(APIView):
 # =============================================================================
 
 
-class ExportPartReadyView(APIView):
+class ExportPartReadyView(GDPRAPIView):
     """Remote service notifies us that its export portion is staged and ready."""
+
+    # Body is a raw {"service", "bucket_path"} dict; response is an empty 204.
+    request_serializer_class = None
+    response_serializer_class = None
 
     permission_classes = [
         permissions.IsAuthenticated

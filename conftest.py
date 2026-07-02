@@ -12,6 +12,8 @@ def pytest_configure(config):
                 "django.contrib.contenttypes",
                 "django.contrib.auth",
                 "django.contrib.sessions",
+                "django.contrib.messages",
+                "django.contrib.admin",  # so stapel_gdpr.admin is importable/testable
                 "stapel_core.django.users",
                 "rest_framework",
                 "stapel_gdpr",
