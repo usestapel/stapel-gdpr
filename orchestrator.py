@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from stapel_core.gdpr import (
@@ -97,12 +98,15 @@ class GDPROrchestrator:
 
     def run_export(self, request_id: int) -> None:
         """Execute export for all local (in-process) providers. Used in monolith mode."""
-        req = DataExportRequest.objects.select_for_update().get(pk=request_id)
-        if req.status not in (DataExportRequest.STATUS_PENDING, DataExportRequest.STATUS_PROCESSING):
-            return
+        # select_for_update() requires an open transaction — without one
+        # Django raises TransactionManagementError on every call.
+        with transaction.atomic():
+            req = DataExportRequest.objects.select_for_update().get(pk=request_id)
+            if req.status not in (DataExportRequest.STATUS_PENDING, DataExportRequest.STATUS_PROCESSING):
+                return
 
-        req.status = DataExportRequest.STATUS_PROCESSING
-        req.save(update_fields=['status'])
+            req.status = DataExportRequest.STATUS_PROCESSING
+            req.save(update_fields=['status'])
 
         staging_dir = self._staging_dir(request_id)
         staging_dir.mkdir(parents=True, exist_ok=True)
@@ -214,7 +218,7 @@ class GDPROrchestrator:
                 request_notification(
                     email=user.email,
                     notification_type='gdpr.export_ready',
-                    params={
+                    variables={
                         'download_url': self._build_download_url(req),
                         'expires_at': req.download_expires_at.isoformat() if req.download_expires_at else '',
                     },
@@ -261,6 +265,15 @@ class GDPROrchestrator:
 
         closure = AccountClosureRequest.objects.create(user_id=user_id, trigger=trigger)
         self._deactivate_user(user_id)
+        try:
+            from stapel_core.comm import emit
+            emit(
+                'user.deletion_initiated',
+                {'user_id': str(user_id), 'trigger': trigger},
+                key=str(user_id),
+            )
+        except Exception as e:
+            logger.error('Failed to emit user.deletion_initiated [%s]: %s', user_id, e)
         return closure
 
     def cancel_closure(self, user_id: int) -> AccountClosureRequest:
@@ -277,21 +290,45 @@ class GDPROrchestrator:
         return closure
 
     def execute_deletion(self, closure: AccountClosureRequest) -> None:
-        """Dispatch deletion to all services via the bus (microservices) or in-process (monolith)."""
+        """Erase user data.
+
+        Local (in-process) providers always run — in a monolith they are the
+        whole deletion. Additionally a ``user.deleted`` Action is emitted so
+        that comm subscribers / remote services erase their side (transport
+        chosen by STAPEL_COMM: in-process, Kafka, ...). The closure is marked
+        DELETED only when every local provider actually succeeded — a
+        swallowed provider crash must not be recorded as a completed erasure.
+        """
         import uuid
         closure.status = AccountClosureRequest.STATUS_DELETING
         closure.save(update_fields=['status'])
 
         user_id = closure.user_id
-        collecting = _collecting_services()
+        correlation_id = str(uuid.uuid4())
 
-        if collecting:
-            self._publish_delete_requested(user_id, str(uuid.uuid4()), collecting)
-        else:
-            self._run_deletion_inprocess(user_id)
-            closure.status     = AccountClosureRequest.STATUS_DELETED
-            closure.deleted_at = timezone.now()
-            closure.save(update_fields=['status', 'deleted_at'])
+        failed = self._run_deletion_inprocess(user_id)
+
+        try:
+            from stapel_core.comm import emit
+            emit(
+                'user.deleted',
+                {'user_id': str(user_id), 'correlation_id': correlation_id},
+                key=str(user_id),
+            )
+        except Exception as e:
+            logger.error('Failed to emit user.deleted [%s]: %s', user_id, e)
+            failed.append('__emit__')
+
+        if failed:
+            logger.error(
+                'GDPR deletion incomplete [user=%s failed=%s] — left in DELETING for retry',
+                user_id, failed,
+            )
+            return
+
+        closure.status     = AccountClosureRequest.STATUS_DELETED
+        closure.deleted_at = timezone.now()
+        closure.save(update_fields=['status', 'deleted_at'])
 
     def _publish_delete_requested(self, user_id: int, correlation_id: str, services: list[str]) -> None:
         try:
@@ -313,17 +350,23 @@ class GDPROrchestrator:
             logger.error('Failed to publish GDPR delete event: %s', e)
             raise
 
-    def _run_deletion_inprocess(self, user_id: int) -> None:
+    def _run_deletion_inprocess(self, user_id: int) -> list[str]:
+        """Run local providers; return the sections that failed."""
+        failed: list[str] = []
         for provider in gdpr_registry.providers:
             try:
                 provider.anonymize(user_id)
             except Exception as e:
                 logger.error('GDPR anonymize failed [%s / %s]: %s', user_id, provider.section, e)
+                failed.append(provider.section)
         for provider in gdpr_registry.providers:
             try:
                 provider.delete(user_id)
             except Exception as e:
                 logger.error('GDPR delete failed [%s / %s]: %s', user_id, provider.section, e)
+                if provider.section not in failed:
+                    failed.append(provider.section)
+        return failed
 
     def _deactivate_user(self, user_id: int) -> None:
         try:

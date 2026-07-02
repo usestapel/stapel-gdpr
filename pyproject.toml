@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 keywords = ["django", "stapel", "gdpr", "privacy", "data-export", "right-to-erasure"]
 classifiers = [
     "Framework :: Django",
-    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.2",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
@@ -27,7 +27,13 @@ all = ["stapel-gdpr[s3]"]
 
 [tool.setuptools]
 package-dir = {"stapel_gdpr" = "."}
-packages = ["stapel_gdpr", "stapel_gdpr.migrations"]
+packages = [
+    "stapel_gdpr",
+    "stapel_gdpr.migrations",
+    "stapel_gdpr.management",
+    "stapel_gdpr.management.commands",
+]
 
 [tool.setuptools.package-data]
-stapel_gdpr = ["migrations/*.py", "migrations/**/*.py"]
+stapel_gdpr = ["migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
+

@@ -259,9 +259,18 @@ class ExportPartReadyView(APIView):
         service = request.data.get("service", "")
         if not service:
             return StapelErrorResponse(400, "error.400.bad_request")
+        bucket_path = request.data.get("bucket_path", "")
+
+        # mark_part_ready is keyed by correlation_id — resolve it from the
+        # request row addressed by this URL.
+        from .models import DataExportRequest
+
+        req = DataExportRequest.objects.filter(pk=request_id).first()
+        if req is None:
+            return StapelErrorResponse(400, "error.400.bad_request")
 
         try:
-            gdpr_orchestrator.mark_part_ready(request_id, service)
+            gdpr_orchestrator.mark_part_ready(req.correlation_id, service, bucket_path)
         except Exception as e:
             logger.error(
                 "mark_part_ready failed: request=%s service=%s err=%s",

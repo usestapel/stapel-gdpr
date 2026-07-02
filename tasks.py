@@ -118,7 +118,7 @@ def _send_inactivity_warn_60(user, days: int):
     request_notification(
         email=user.email,
         notification_type='gdpr.inactivity_warning',
-        params={'days_remaining': days},
+        variables={'days_remaining': days},
     )
 
 
@@ -131,7 +131,7 @@ def _send_inactivity_closed_email(user):
     request_notification(
         email=user.email,
         notification_type='gdpr.inactivity_closed',
-        params={},
+        variables={},
     )
 
 
