@@ -8,6 +8,7 @@ class StapelGDPRConfig(AppConfig):
     verbose_name = 'Stapel GDPR'
 
     def ready(self):
+        from . import actions  # noqa: F401  — register comm subscribers
         self._register_gdpr_providers()
 
     def _register_gdpr_providers(self):

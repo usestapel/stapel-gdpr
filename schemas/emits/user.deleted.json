@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "user.deleted",
-  "description": "All user PII permanently deleted after grace period. Every package storing user data must subscribe.",
+  "description": "All user PII permanently deleted after grace period. Every package storing user data must subscribe; remote services confirm with gdpr.section.erased carrying the same correlation_id.",
   "type": "object",
-  "required": ["user_id", "deleted_at", "trigger"],
+  "required": ["user_id", "correlation_id"],
   "properties": {
-    "user_id":    { "type": "integer" },
-    "deleted_at": { "type": "string", "format": "date-time" },
-    "trigger":    { "type": "string", "enum": ["manual", "inactivity", "platform"] }
+    "user_id":        { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "trigger":        { "type": "string", "enum": ["manual", "inactivity", "platform"] },
+    "deleted_at":     { "type": "string", "format": "date-time" }
   },
   "additionalProperties": false
 }

@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["user_id", "request_id", "download_expires_at"],
   "properties": {
-    "user_id":             { "type": "integer" },
+    "user_id":             { "type": "string", "format": "uuid" },
     "request_id":          { "type": "integer" },
     "download_expires_at": { "type": "string", "format": "date-time" }
   },

@@ -35,5 +35,5 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-stapel_gdpr = ["migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
+stapel_gdpr = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
 

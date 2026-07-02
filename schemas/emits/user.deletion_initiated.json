@@ -3,9 +3,9 @@
   "title": "user.deletion_initiated",
   "description": "Account closure started. 30-day grace period begins; account is deactivated.",
   "type": "object",
-  "required": ["user_id", "grace_ends_at", "trigger"],
+  "required": ["user_id", "trigger"],
   "properties": {
-    "user_id":       { "type": "integer" },
+    "user_id":       { "type": "string", "format": "uuid" },
     "grace_ends_at": { "type": "string", "format": "date-time" },
     "trigger":       { "type": "string", "enum": ["manual", "inactivity", "platform"] }
   },

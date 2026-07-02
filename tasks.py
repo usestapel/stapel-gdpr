@@ -47,14 +47,22 @@ def sweep_pending_exports():
 
 @shared_task
 def process_expired_grace_periods():
-    """Execute deletion for accounts whose 30-day grace period has elapsed."""
-    from .models import AccountClosureRequest
+    """Execute deletion for accounts whose 30-day grace period has elapsed.
+
+    Users under an unreleased legal hold are skipped — their closure stays
+    in GRACE until the hold is released (GDPR Art. 17(3)).
+    """
+    from .models import AccountClosureRequest, LegalHold
     from .orchestrator import gdpr_orchestrator
+
+    held_user_ids = LegalHold.objects.filter(
+        released_at__isnull=True,
+    ).values_list('user_id', flat=True)
 
     expired = AccountClosureRequest.objects.filter(
         status=AccountClosureRequest.STATUS_GRACE,
         grace_ends_at__lte=timezone.now(),
-    )
+    ).exclude(user_id__in=held_user_ids)
     for closure in expired:
         try:
             gdpr_orchestrator.execute_deletion(closure)
@@ -141,10 +149,23 @@ def _send_inactivity_closed_email(user):
 
 @shared_task
 def run_retention_cleanup():
-    """Delete data that has exceeded its legal retention period."""
-    from .models import ReRegistrationHash
+    """Delete data that has exceeded its legal retention period.
 
-    expired_hashes = ReRegistrationHash.objects.filter(expires_at__lte=timezone.now())
+    Data belonging to users under an unreleased legal hold is preserved —
+    it must remain available for litigation/investigation.
+    """
+    from .models import LegalHold, ReRegistrationHash
+
+    held_user_ids = [
+        str(uid)
+        for uid in LegalHold.objects.filter(
+            released_at__isnull=True,
+        ).values_list('user_id', flat=True)
+    ]
+
+    expired_hashes = ReRegistrationHash.objects.filter(
+        expires_at__lte=timezone.now(),
+    ).exclude(user_id_was__in=held_user_ids)
     count = expired_hashes.count()
     expired_hashes.delete()
     if count:
@@ -156,7 +177,7 @@ def run_retention_cleanup():
 # ---------------------------------------------------------------------------
 
 @shared_task
-def notify_llm_providers_of_deletion(user_id: int, providers_used: list[str]):
+def notify_llm_providers_of_deletion(user_id: str, providers_used: list[str]):
     """
     Log deletion request for LLM providers.
     In practice this is a manual process via DPA — we log the obligation here.

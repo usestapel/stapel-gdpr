@@ -7,8 +7,12 @@ Microservices:   orchestrator publishes bus events; each service handles its own
                  The orchestrator assembles the final archive by downloading from storage.
 """
 import logging
+import os
+import shutil
+import uuid as uuid_lib
 import zipfile
 from pathlib import Path
+from typing import Union
 
 from django.conf import settings
 from django.db import transaction
@@ -20,9 +24,26 @@ from stapel_core.gdpr import (
     gdpr_registry,
 )
 
-from .models import AccountClosureRequest, DataExportPart, DataExportRequest
+from .conf import gdpr_settings
+from .models import (
+    AccountClosureRequest,
+    AccountDeletionPart,
+    DataExportPart,
+    DataExportRequest,
+    LegalHold,
+)
 
 logger = logging.getLogger(__name__)
+
+# Framework users have UUID primary keys; str is accepted for convenience.
+UserId = Union[uuid_lib.UUID, str]
+
+
+def _secure_mkdir(path: Path) -> Path:
+    """mkdir -p with owner-only permissions (0700)."""
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
 
 
 def _collecting_services() -> list[str]:
@@ -41,7 +62,7 @@ class GDPROrchestrator:
     # Export
     # -------------------------------------------------------------------------
 
-    def request_export(self, user_id: int) -> DataExportRequest:
+    def request_export(self, user_id: UserId) -> DataExportRequest:
         """Create a new export request and dispatch it to all services via the bus.
 
         Raises ValueError('export_cooldown') if a recent request already exists.
@@ -85,7 +106,7 @@ class GDPROrchestrator:
                 service='gdpr',
                 payload={
                     'correlation_id': req.correlation_id,
-                    'user_id': req.user_id,
+                    'user_id': str(req.user_id),
                     'request_id': req.pk,
                 },
                 key=str(req.user_id),
@@ -108,8 +129,7 @@ class GDPROrchestrator:
             req.status = DataExportRequest.STATUS_PROCESSING
             req.save(update_fields=['status'])
 
-        staging_dir = self._staging_dir(request_id)
-        staging_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = _secure_mkdir(self._staging_dir(request_id))
 
         for provider in gdpr_registry.providers:
             part = req.parts.filter(service=provider.section).first()
@@ -164,14 +184,38 @@ class GDPROrchestrator:
             self._try_assemble(req, self._staging_dir(req.pk), force=True)
 
     def _try_assemble(self, req: DataExportRequest, staging_dir: Path, force: bool = False) -> None:
-        if req.all_parts_done or force or timezone.now() >= req.deadline:
-            self._assemble_zip(req, staging_dir, partial=not req.all_parts_done)
+        """Assemble the archive exactly once.
+
+        Guarded with SELECT ... FOR UPDATE and an ASSEMBLING status flip so
+        concurrent part completions (bus consumer + HTTP callback + sweep)
+        cannot build the zip twice.
+        """
+        with transaction.atomic():
+            locked = DataExportRequest.objects.select_for_update().get(pk=req.pk)
+            if locked.status not in (
+                DataExportRequest.STATUS_PENDING,
+                DataExportRequest.STATUS_PROCESSING,
+            ):
+                return  # already assembling / ready / failed / expired
+            if not (locked.all_parts_done or force or timezone.now() >= locked.deadline):
+                return
+            locked.status = DataExportRequest.STATUS_ASSEMBLING
+            locked.save(update_fields=['status'])
+
+        try:
+            self._assemble_zip(locked, staging_dir, partial=not locked.all_parts_done)
+        except Exception as e:
+            logger.error('GDPR archive assembly failed [request=%s]: %s', locked.pk, e)
+            # Return the request to PROCESSING so the deadline sweep retries.
+            locked.status = DataExportRequest.STATUS_PROCESSING
+            locked.error  = str(e)
+            locked.save(update_fields=['status', 'error'])
+            raise
 
     def _assemble_zip(self, req: DataExportRequest, staging_dir: Path, partial: bool = False) -> None:
         self._download_bucket_parts(req, staging_dir)
 
-        archive_root = Path(getattr(settings, 'GDPR_ARCHIVE_ROOT', '/tmp/gdpr_exports'))
-        archive_root.mkdir(parents=True, exist_ok=True)
+        archive_root = _secure_mkdir(self._archive_root())
         zip_path = archive_root / f'export_{req.pk}.zip'
 
         date_str = req.created_at.strftime('%Y-%m-%d')
@@ -188,6 +232,10 @@ class GDPROrchestrator:
         req.status       = DataExportRequest.STATUS_READY
         req.save(update_fields=['archive_path', 'status'])
         req.generate_download_token()
+
+        # PII must not linger in the staging area once zipped.
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
         self._send_ready_notification(req)
         logger.info('GDPR export archive assembled [request=%s partial=%s]', req.pk, partial)
@@ -250,14 +298,27 @@ class GDPROrchestrator:
         return '\n'.join(lines)
 
     def _staging_dir(self, request_id: int) -> Path:
-        base = Path(getattr(settings, 'GDPR_STAGING_ROOT', '/tmp/gdpr_staging'))
-        return base / str(request_id)
+        return self._staging_root() / str(request_id)
+
+    def _staging_root(self) -> Path:
+        configured = gdpr_settings.STAGING_ROOT or getattr(settings, 'GDPR_STAGING_ROOT', '')
+        if configured:
+            return Path(configured)
+        return Path(settings.MEDIA_ROOT) / 'gdpr' / 'staging'
+
+    def _archive_root(self) -> Path:
+        configured = gdpr_settings.ARCHIVE_ROOT or getattr(settings, 'GDPR_ARCHIVE_ROOT', '')
+        if configured:
+            return Path(configured)
+        return Path(settings.MEDIA_ROOT) / 'gdpr' / 'exports'
 
     # -------------------------------------------------------------------------
     # Account closure / deletion
     # -------------------------------------------------------------------------
 
-    def initiate_closure(self, user_id: int, trigger: str = AccountClosureRequest.TRIGGER_MANUAL) -> AccountClosureRequest:
+    def initiate_closure(self, user_id: UserId, trigger: str = AccountClosureRequest.TRIGGER_MANUAL) -> AccountClosureRequest:
+        if LegalHold.is_held(user_id):
+            raise ValueError('legal_hold')
         if AccountClosureRequest.objects.filter(
             user_id=user_id, status__in=[AccountClosureRequest.STATUS_GRACE, AccountClosureRequest.STATUS_DELETING]
         ).exists():
@@ -269,14 +330,18 @@ class GDPROrchestrator:
             from stapel_core.comm import emit
             emit(
                 'user.deletion_initiated',
-                {'user_id': str(user_id), 'trigger': trigger},
+                {
+                    'user_id': str(user_id),
+                    'trigger': trigger,
+                    'grace_ends_at': closure.grace_ends_at.isoformat(),
+                },
                 key=str(user_id),
             )
         except Exception as e:
             logger.error('Failed to emit user.deletion_initiated [%s]: %s', user_id, e)
         return closure
 
-    def cancel_closure(self, user_id: int) -> AccountClosureRequest:
+    def cancel_closure(self, user_id: UserId) -> AccountClosureRequest:
         closure = AccountClosureRequest.objects.filter(
             user_id=user_id, status=AccountClosureRequest.STATUS_GRACE
         ).first()
@@ -298,13 +363,31 @@ class GDPROrchestrator:
         chosen by STAPEL_COMM: in-process, Kafka, ...). The closure is marked
         DELETED only when every local provider actually succeeded — a
         swallowed provider crash must not be recorded as a completed erasure.
-        """
-        import uuid
-        closure.status = AccountClosureRequest.STATUS_DELETING
-        closure.save(update_fields=['status'])
 
-        user_id = closure.user_id
-        correlation_id = str(uuid.uuid4())
+        Remote services (STAPEL_GDPR["REMOTE_DELETION_SERVICES"]) each get an
+        AccountDeletionPart and must confirm with a ``gdpr.section.erased``
+        action carrying this closure's correlation_id. The closure flips to
+        DELETED only when local providers succeeded AND all expected remote
+        parts are done (immediately, when the list is empty).
+        """
+        if LegalHold.is_held(closure.user_id):
+            raise ValueError('legal_hold')
+
+        closure.status = AccountClosureRequest.STATUS_DELETING
+        if not closure.correlation_id:
+            closure.correlation_id = str(uuid_lib.uuid4())
+        closure.save(update_fields=['status', 'correlation_id'])
+
+        user_id        = closure.user_id
+        correlation_id = closure.correlation_id
+
+        # Expected remote confirmations — one part per configured service.
+        for service in gdpr_settings.REMOTE_DELETION_SERVICES:
+            AccountDeletionPart.objects.get_or_create(closure=closure, service=service)
+
+        # Re-registration hashes must be captured BEFORE erasure destroys
+        # the identifiers.
+        self._store_reregistration_hashes(user_id)
 
         failed = self._run_deletion_inprocess(user_id)
 
@@ -312,7 +395,11 @@ class GDPROrchestrator:
             from stapel_core.comm import emit
             emit(
                 'user.deleted',
-                {'user_id': str(user_id), 'correlation_id': correlation_id},
+                {
+                    'user_id': str(user_id),
+                    'correlation_id': correlation_id,
+                    'trigger': closure.trigger,
+                },
                 key=str(user_id),
             )
         except Exception as e:
@@ -326,11 +413,62 @@ class GDPROrchestrator:
             )
             return
 
+        closure.local_erasure_done = True
+        closure.save(update_fields=['local_erasure_done'])
+        self._maybe_finalize(closure)
+
+    def mark_section_erased(self, correlation_id: str, service: str) -> None:
+        """Called when a remote service confirms erasure via gdpr.section.erased."""
+        closure = AccountClosureRequest.objects.filter(correlation_id=correlation_id).first()
+        if closure is None:
+            logger.warning('gdpr.section.erased for unknown correlation_id=%s service=%s',
+                           correlation_id, service)
+            return
+
+        updated = AccountDeletionPart.objects.filter(
+            closure=closure, service=service,
+        ).exclude(status=AccountDeletionPart.STATUS_DONE).update(
+            status=AccountDeletionPart.STATUS_DONE,
+            completed_at=timezone.now(),
+        )
+        if not updated:
+            logger.debug('GDPR deletion part already done or unknown [correlation=%s service=%s]',
+                         correlation_id, service)
+            return
+
+        closure.refresh_from_db()
+        self._maybe_finalize(closure)
+
+    def _maybe_finalize(self, closure: AccountClosureRequest) -> None:
+        """Flip the closure to DELETED once local + all remote erasure is confirmed."""
+        if closure.status != AccountClosureRequest.STATUS_DELETING:
+            return
+        if not closure.local_erasure_done or not closure.all_remote_parts_done:
+            return
         closure.status     = AccountClosureRequest.STATUS_DELETED
         closure.deleted_at = timezone.now()
         closure.save(update_fields=['status', 'deleted_at'])
+        logger.info('GDPR account deletion completed [user=%s correlation=%s]',
+                    closure.user_id, closure.correlation_id)
 
-    def _publish_delete_requested(self, user_id: int, correlation_id: str, services: list[str]) -> None:
+    def _store_reregistration_hashes(self, user_id: UserId) -> None:
+        """Persist salted hashes of the user's identifiers before erasure."""
+        try:
+            from django.contrib.auth import get_user_model
+
+            from .reregistration import store_hashes
+            user = get_user_model().objects.filter(pk=user_id).first()
+            if user is None:
+                return
+            store_hashes(
+                user_id,
+                email=getattr(user, 'email', None),
+                phone=getattr(user, 'phone', None),
+            )
+        except Exception as e:
+            logger.error('Failed to store re-registration hashes [%s]: %s', user_id, e)
+
+    def _publish_delete_requested(self, user_id: UserId, correlation_id: str, services: list[str]) -> None:
         try:
             from stapel_core.bus.event import Event
             from stapel_core.bus.router import get_bus
@@ -339,7 +477,7 @@ class GDPROrchestrator:
                 service='gdpr',
                 payload={
                     'correlation_id': correlation_id,
-                    'user_id': user_id,
+                    'user_id': str(user_id),
                     'services': services,
                 },
                 key=str(user_id),
@@ -350,7 +488,7 @@ class GDPROrchestrator:
             logger.error('Failed to publish GDPR delete event: %s', e)
             raise
 
-    def _run_deletion_inprocess(self, user_id: int) -> list[str]:
+    def _run_deletion_inprocess(self, user_id: UserId) -> list[str]:
         """Run local providers; return the sections that failed."""
         failed: list[str] = []
         for provider in gdpr_registry.providers:
@@ -368,14 +506,14 @@ class GDPROrchestrator:
                     failed.append(provider.section)
         return failed
 
-    def _deactivate_user(self, user_id: int) -> None:
+    def _deactivate_user(self, user_id: UserId) -> None:
         try:
             from django.contrib.auth import get_user_model
             get_user_model().objects.filter(pk=user_id).update(is_active=False)
         except Exception as e:
             logger.error('Failed to deactivate user %s: %s', user_id, e)
 
-    def _reactivate_user(self, user_id: int) -> None:
+    def _reactivate_user(self, user_id: UserId) -> None:
         try:
             from django.contrib.auth import get_user_model
             get_user_model().objects.filter(pk=user_id).update(is_active=True)

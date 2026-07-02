@@ -7,18 +7,21 @@ from datetime import timedelta
 class DataExportRequest(models.Model):
     STATUS_PENDING    = 'pending'
     STATUS_PROCESSING = 'processing'
+    STATUS_ASSEMBLING = 'assembling'
     STATUS_READY      = 'ready'
     STATUS_FAILED     = 'failed'
     STATUS_EXPIRED    = 'expired'
     STATUS_CHOICES = [
         (STATUS_PENDING,    'Pending'),
         (STATUS_PROCESSING, 'Processing'),
+        (STATUS_ASSEMBLING, 'Assembling'),
         (STATUS_READY,      'Ready'),
         (STATUS_FAILED,     'Failed'),
         (STATUS_EXPIRED,    'Expired'),
     ]
 
-    user_id             = models.BigIntegerField(db_index=True)
+    # Framework users have UUID primary keys (settings.AUTH_USER_MODEL).
+    user_id             = models.UUIDField(db_index=True)
     status              = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     # UUID used as the bus correlation key — links this request to service completion events.
     correlation_id      = models.CharField(max_length=36, unique=True, null=True, blank=True, db_index=True)
@@ -100,9 +103,16 @@ class AccountClosureRequest(models.Model):
         (STATUS_CANCELLED, 'Cancelled'),
     ]
 
-    user_id       = models.BigIntegerField(unique=True, db_index=True)
+    # Not unique: a user may close, cancel, and later close again — the
+    # orchestrator guards against concurrent *active* closures instead.
+    user_id       = models.UUIDField(db_index=True)
     trigger       = models.CharField(max_length=20, choices=TRIGGER_CHOICES)
     status        = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_GRACE)
+    # UUID used as the comm correlation key — links this closure to
+    # gdpr.section.erased confirmations from remote services.
+    correlation_id = models.CharField(max_length=36, unique=True, null=True, blank=True, db_index=True)
+    # Set once every local (in-process) provider erased successfully.
+    local_erasure_done = models.BooleanField(default=False)
     initiated_at  = models.DateTimeField(auto_now_add=True)
     grace_ends_at = models.DateTimeField()    # +30 days
     deleted_at    = models.DateTimeField(null=True, blank=True)
@@ -115,6 +125,62 @@ class AccountClosureRequest(models.Model):
         if not self.pk and not self.grace_ends_at:
             self.grace_ends_at = timezone.now() + timedelta(days=30)
         super().save(*args, **kwargs)
+
+    @property
+    def all_remote_parts_done(self):
+        """True when every expected remote service confirmed erasure
+        (vacuously true when no remote services are configured)."""
+        return not self.parts.exclude(status=AccountDeletionPart.STATUS_DONE).exists()
+
+
+class AccountDeletionPart(models.Model):
+    """Per-service deletion confirmation — mirrors DataExportPart.
+
+    One row per remote service expected to erase its slice of user data
+    (STAPEL_GDPR["REMOTE_DELETION_SERVICES"]). Services confirm by emitting
+    ``gdpr.section.erased`` with the closure's correlation_id.
+    """
+    STATUS_PENDING = 'pending'
+    STATUS_DONE    = 'done'
+    STATUS_FAILED  = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_DONE,    'Done'),
+        (STATUS_FAILED,  'Failed'),
+    ]
+
+    closure      = models.ForeignKey(AccountClosureRequest, on_delete=models.CASCADE, related_name='parts')
+    service      = models.CharField(max_length=50)
+    status       = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error        = models.TextField(null=True, blank=True)
+
+    class Meta:
+        app_label       = 'gdpr'
+        unique_together = [('closure', 'service')]
+
+
+class LegalHold(models.Model):
+    """Blocks account closure / deletion while litigation or an official
+    investigation requires the data to be preserved (GDPR Art. 17(3))."""
+
+    user_id     = models.UUIDField(db_index=True)
+    reason      = models.TextField()
+    created_by  = models.CharField(max_length=150, blank=True, default='')
+    created_at  = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        app_label = 'gdpr'
+        ordering  = ['-created_at']
+
+    @classmethod
+    def is_held(cls, user_id) -> bool:
+        return cls.objects.filter(user_id=user_id, released_at__isnull=True).exists()
+
+    def __str__(self):
+        state = 'released' if self.released_at else 'active'
+        return f'LegalHold({self.user_id}, {state})'
 
 
 class ReRegistrationHash(models.Model):

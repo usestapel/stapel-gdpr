@@ -19,6 +19,7 @@ from .errors import (
     ERR_404_NO_ACTIVE_CLOSURE,
     ERR_409_CLOSURE_PENDING,
     ERR_409_EXPORT_COOLDOWN,
+    ERR_409_LEGAL_HOLD,
     ERR_410_DOWNLOAD_EXPIRED,
     ERR_425_EXPORT_NOT_READY,
 )
@@ -119,7 +120,27 @@ class DataExportDownloadView(APIView):
         tags=["GDPR"],
     )
     def get(self, request: Request):
-        token = request.query_params.get("token", "")
+        return self._serve(request, request.query_params.get("token", ""))
+
+    @extend_schema(
+        summary="Download data export archive (token in body)",
+        description=(
+            "Same as GET but the single-use token travels in the request body "
+            "instead of the URL, so it never lands in access logs or referrers. "
+            "Bound to the authenticated user."
+        ),
+        responses={200: None},
+        tags=["GDPR"],
+    )
+    def post(self, request: Request):
+        return self._serve(request, str(request.data.get("token", "")))
+
+    def _serve(self, request: Request, token: str):
+        if not token:
+            return StapelErrorResponse(404, ERR_404_EXPORT_NOT_FOUND)
+
+        # Token is always bound to the authenticated user — knowing the token
+        # alone is not enough to fetch someone else's archive.
         export_req = DataExportRequest.objects.filter(
             user_id=request.user.pk,
             download_token=token,
@@ -176,6 +197,8 @@ class AccountCloseView(APIView):
         except ValueError as e:
             if str(e) == "closure_already_pending":
                 return StapelErrorResponse(409, ERR_409_CLOSURE_PENDING)
+            if str(e) == "legal_hold":
+                return StapelErrorResponse(409, ERR_409_LEGAL_HOLD)
             return error_500_internal()
 
         dto = ClosureStatusDTO(
