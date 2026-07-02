@@ -53,3 +53,16 @@ The pre-push hook runs the same command; CI rejects anything it flags.
 
 Conventional commits (`feat:`, `fix:`, `docs:`, `refactor:`); one logical
 change per commit; add a CHANGELOG entry under **Unreleased**.
+
+## Coverage policy (CI)
+
+Two Codecov statuses with different semantics (see `codecov.yml`):
+
+- **`codecov/project` — ratchet.** Total coverage must not drop by more
+  than 0.5% — the "quality ratchets never silently regress" invariant.
+- **`codecov/patch` — floor (80%).** New code needs tests, but a diff is
+  measured against a fixed floor, not against the project average.
+  Migrations/tests/scaffolding are excluded from coverage.
+
+If a legitimately hard-to-test diff trips the floor, split the testable
+part or justify in the PR — do not lower the floor in `codecov.yml`.

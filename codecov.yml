@@ -1,0 +1,31 @@
+# Coverage gate policy (codified in docs/system-design.md §7.13.5):
+#
+# - `project` is the RATCHET (invariant I5): total coverage must not
+#   degrade silently. Target = current value, small tolerance for noise.
+# - `patch` is a FLOOR, not a ratchet: new code needs solid coverage, but
+#   a diff is not judged against the historical project average — holding
+#   every patch to the average makes the bar drift upward forever and
+#   fails legitimate low-testability diffs.
+#
+# Migrations, test scaffolding and generated entrypoints are excluded from
+# coverage entirely — "uncovered migration" is not a signal.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%
+    patch:
+      default:
+        target: 80%
+
+ignore:
+  - "**/migrations/**"
+  - "**/tests/**"
+  - "conftest.py"
+  - "manage.py"
+  - "setup-hooks.sh"
+
+comment:
+  layout: "condensed_header, diff, files"
+  require_changes: true
