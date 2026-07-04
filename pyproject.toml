@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-gdpr"
-version = "0.3.0"
+version = "0.3.1"
 description = "GDPR data export and account deletion Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }

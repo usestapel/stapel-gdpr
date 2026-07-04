@@ -3,6 +3,12 @@
 All notable changes to `stapel-gdpr` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.1 — 2026-07-04
+
+### Added
+- `MODULE.md` — agent-facing extension-point map (part of the July 2026
+  framework-wide documentation sweep). No functional changes.
+
 ## 0.3.0 — 2026-07-03
 
 No functional changes — version alignment with the Stapel 0.3
