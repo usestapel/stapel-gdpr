@@ -9,3 +9,6 @@ build/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# build/test stderr scratch
+*.err
