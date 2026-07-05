@@ -3,6 +3,15 @@
 All notable changes to `stapel-gdpr` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.3 — 2026-07-06
+
+### Packaging
+- `[project.urls]` added, trove classifiers completed (MIT/OSI, Python 3.13,
+  `Typing :: Typed`, OS Independent, `3 :: Only`, Development Status) and a
+  `[tool.ruff]` lint section added (single source shared with the git
+  hooks/CI). Tests were already excluded from the wheel/sdist `packages`.
+
+
 ## 0.3.2 — 2026-07-05
 
 ### Changed

@@ -4,22 +4,36 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-gdpr"
-version = "0.3.2"
+version = "0.3.3"
 description = "GDPR data export and account deletion Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 keywords = ["django", "stapel", "gdpr", "privacy", "data-export", "right-to-erasure"]
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Framework :: Django",
     "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
 ]
 dependencies = [
     "stapel-core>=0.3.0,<0.4",
     "celery>=5.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/usestapel/stapel-gdpr"
+Repository = "https://github.com/usestapel/stapel-gdpr"
+Documentation = "https://github.com/usestapel/stapel-gdpr#readme"
+Changelog = "https://github.com/usestapel/stapel-gdpr/blob/main/CHANGELOG.md"
+Issues = "https://github.com/usestapel/stapel-gdpr/issues"
 
 [project.optional-dependencies]
 s3 = ["boto3>=1.34"]       # for S3-backed staging in microservices mode
@@ -36,6 +50,14 @@ packages = [
 
 [tool.setuptools.package-data]
 stapel_gdpr = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Single source for the git hooks and CI (they pass the same flags on the CLI).
+select = ["E", "F", "W"]
+ignore = ["E501"]
 
 [tool.coverage.run]
 omit = [
