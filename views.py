@@ -3,8 +3,13 @@ import os
 
 from django.http import FileResponse
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
-from rest_framework import permissions
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    extend_schema,
+    inline_serializer,
+)
+from rest_framework import permissions, serializers
 from rest_framework.request import Request
 from rest_framework.views import APIView
 from stapel_core.django.api.errors import (
@@ -12,6 +17,7 @@ from stapel_core.django.api.errors import (
     StapelResponse,
     error_500_internal,
 )
+from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
 from .dto import ClosureStatusDTO, ExportRequestDTO, ExportStatusDTO
 from .errors import (
@@ -67,7 +73,11 @@ class DataExportRequestView(GDPRAPIView):
     @extend_schema(
         summary="Request personal data export",
         description="Initiates an async export job. Archive ready within 48 h. Max once per 30 days.",
-        responses={202: ExportRequestSerializer},
+        request=None,
+        responses={
+            202: ExportRequestSerializer,
+            409: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def post(self, request: Request):
@@ -143,7 +153,20 @@ class DataExportDownloadView(GDPRAPIView):
     @extend_schema(
         summary="Download data export archive",
         description="Returns the ZIP archive. Link is valid for 7 days after export is ready.",
-        responses={200: None},
+        parameters=[
+            OpenApiParameter(
+                "token",
+                str,
+                required=True,
+                description="Single-use download token bound to the authenticated user.",
+            )
+        ],
+        responses={
+            (200, "application/zip"): OpenApiTypes.BINARY,
+            404: StapelErrorSerializer,
+            410: StapelErrorSerializer,
+            425: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def get(self, request: Request):
@@ -156,7 +179,22 @@ class DataExportDownloadView(GDPRAPIView):
             "instead of the URL, so it never lands in access logs or referrers. "
             "Bound to the authenticated user."
         ),
-        responses={200: None},
+        request=inline_serializer(
+            name="GDPRDownloadTokenRequest",
+            fields={
+                "token": serializers.CharField(
+                    help_text=(
+                        "Single-use download token bound to the authenticated user."
+                    )
+                )
+            },
+        ),
+        responses={
+            (200, "application/zip"): OpenApiTypes.BINARY,
+            404: StapelErrorSerializer,
+            410: StapelErrorSerializer,
+            425: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def post(self, request: Request):
@@ -217,7 +255,11 @@ class AccountCloseView(GDPRAPIView):
     @extend_schema(
         summary="Initiate account closure",
         description="Starts a 30-day grace period. Account is deactivated immediately. Can be cancelled by logging in.",
-        responses={202: ClosureStatusSerializer},
+        request=None,
+        responses={
+            202: ClosureStatusSerializer,
+            409: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def post(self, request: Request):
@@ -245,7 +287,11 @@ class AccountCancelCloseView(GDPRAPIView):
 
     @extend_schema(
         summary="Cancel account closure during grace period",
-        responses={200: ClosureStatusSerializer},
+        request=None,
+        responses={
+            200: ClosureStatusSerializer,
+            404: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def post(self, request: Request):

@@ -3,6 +3,17 @@
 All notable changes to `stapel-gdpr` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.3.2 — 2026-07-05
+
+### Changed
+- OpenAPI: `@extend_schema` annotations for the AccountClose, AccountCancelClose,
+  DataExportRequest, and DataExportDownload views now reflect the real contract —
+  truthful error responses (`StapelErrorSerializer` for 404/409/410/425),
+  `request=None` on body-less POSTs, an explicit `token` request body / query
+  parameter for the download endpoints, and a binary (`application/zip`) 200
+  response for the archive download. Resolves the drf-spectacular "unable to
+  guess serializer" errors. No runtime behavior change.
+
 ## 0.3.1 — 2026-07-04
 
 ### Added
