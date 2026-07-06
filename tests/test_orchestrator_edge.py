@@ -165,26 +165,38 @@ class TestRunExportBranches:
 
 @pytest.mark.django_db
 class TestDeletionBranches:
-    def test_emit_failure_on_initiate_still_creates_closure(self, user, monkeypatch):
-        def boom(*args, **kwargs):
+    def test_emit_failure_on_initiate_rolls_back(self, user, monkeypatch):
+        """The outbox guarantee: initiate_closure joins create()+deactivate()
+        into mutate_and_emit(), so a failing emit must roll the whole
+        mutation back and propagate — never a committed closure/deactivation
+        with no announcement (categories C1 precedent; EMIT002)."""
+        def boom(event):
             raise RuntimeError("comm down")
 
-        monkeypatch.setattr("stapel_core.comm.emit", boom)
-        closure = gdpr_orchestrator.initiate_closure(user.pk)
-        assert closure.status == AccountClosureRequest.STATUS_GRACE
-        user.refresh_from_db()
-        assert user.is_active is False
+        monkeypatch.setattr("stapel_core.comm.actions.deliver", boom)
+        with pytest.raises(RuntimeError, match="comm down"):
+            gdpr_orchestrator.initiate_closure(user.pk)
 
-    def test_emit_failure_on_delete_leaves_closure_deleting(
+        assert not AccountClosureRequest.objects.filter(user_id=user.pk).exists()
+        user.refresh_from_db()
+        assert user.is_active is True
+
+    def test_emit_failure_on_delete_propagates_and_leaves_closure_deleting(
         self, user, fake_provider, monkeypatch
     ):
+        """Same guarantee on the deletion side: local_erasure_done + the
+        user.deleted emit are one mutate_and_emit() unit — a failing emit
+        rolls the flag back and propagates instead of being swallowed
+        (EMIT002); the caller (tasks.py) already retries on the next sweep,
+        and local erasure is idempotent."""
         closure = gdpr_orchestrator.initiate_closure(user.pk)
 
-        def boom(*args, **kwargs):
+        def boom(event):
             raise RuntimeError("comm down")
 
-        monkeypatch.setattr("stapel_core.comm.emit", boom)
-        gdpr_orchestrator.execute_deletion(closure)
+        monkeypatch.setattr("stapel_core.comm.actions.deliver", boom)
+        with pytest.raises(RuntimeError, match="comm down"):
+            gdpr_orchestrator.execute_deletion(closure)
 
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_DELETING

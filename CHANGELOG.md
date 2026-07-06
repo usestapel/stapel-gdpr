@@ -5,6 +5,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **EMIT002 (outbox atomicity):** `initiate_closure()` and `execute_deletion()`
+  swallowed a failing `emit()` behind a broad `except Exception: logger.error(...)`
+  — the closure row (+ user deactivation) or the `local_erasure_done` flip
+  could commit while the `user.deletion_initiated` / `user.deleted` action
+  silently never went out (the categories C1 bug, on the GDPR erasure path —
+  remote services rely on `user.deleted` to erase their own section). Both
+  sites now join their mutation and the emit into one `stapel_core.comm.mutate_and_emit()`
+  unit: a failing emit rolls the mutation back and propagates instead of being
+  swallowed. `tasks.py`'s callers (`check_inactive_accounts`,
+  `process_expired_grace_periods`) already wrap these calls in their own
+  `try/except` and retry on the next scheduled sweep — local erasure is
+  idempotent, so re-running `execute_deletion()` is safe.
+  `emit_check` (`stapel_core.lint.emit_check`) is now clean on this module.
+
 ### Changed
 - Admin-suite AS-5: `@access.ops` on `DataExportRequest`, `DataExportPart`,
   `AccountClosureRequest`, `AccountDeletionPart`, and `ReRegistrationHash` —

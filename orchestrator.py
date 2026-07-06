@@ -317,6 +317,16 @@ class GDPROrchestrator:
     # -------------------------------------------------------------------------
 
     def initiate_closure(self, user_id: UserId, trigger: str = AccountClosureRequest.TRIGGER_MANUAL) -> AccountClosureRequest:
+        """Create the closure request, deactivate the user, and announce it.
+
+        The row + deactivation + ``user.deletion_initiated`` emit are one
+        outbox unit via ``mutate_and_emit()``: a failing emit rolls the
+        mutation back and propagates (never swallowed) — a closure request
+        that consumers were never told about (e.g. stapel-notifications
+        deactivating contacts) must not silently exist. Callers that need
+        best-effort semantics already wrap this call (``tasks.py``'s
+        ``check_inactive_accounts``); the HTTP view surfaces it as a 500.
+        """
         if LegalHold.is_held(user_id):
             raise ValueError('legal_hold')
         if AccountClosureRequest.objects.filter(
@@ -324,10 +334,11 @@ class GDPROrchestrator:
         ).exists():
             raise ValueError('closure_already_pending')
 
-        closure = AccountClosureRequest.objects.create(user_id=user_id, trigger=trigger)
-        self._deactivate_user(user_id)
-        try:
-            from stapel_core.comm import emit
+        from stapel_core.comm import mutate_and_emit
+
+        with mutate_and_emit() as emit:
+            closure = AccountClosureRequest.objects.create(user_id=user_id, trigger=trigger)
+            self._deactivate_user(user_id)
             emit(
                 'user.deletion_initiated',
                 {
@@ -337,8 +348,6 @@ class GDPROrchestrator:
                 },
                 key=str(user_id),
             )
-        except Exception as e:
-            logger.error('Failed to emit user.deletion_initiated [%s]: %s', user_id, e)
         return closure
 
     def cancel_closure(self, user_id: UserId) -> AccountClosureRequest:
@@ -369,6 +378,15 @@ class GDPROrchestrator:
         action carrying this closure's correlation_id. The closure flips to
         DELETED only when local providers succeeded AND all expected remote
         parts are done (immediately, when the list is empty).
+
+        ``local_erasure_done`` and the ``user.deleted`` emit are one outbox
+        unit via ``mutate_and_emit()``: a failing emit rolls the flag back
+        and propagates (never swallowed) — remote services rely on this
+        event to erase their own section, so a closure must never be
+        recorded as locally-erased without it having gone out. The caller
+        (``tasks.py``'s ``process_expired_grace_periods``) already retries
+        by re-invoking ``execute_deletion`` on the next sweep; local erasure
+        is idempotent so the retry is safe.
         """
         if LegalHold.is_held(closure.user_id):
             raise ValueError('legal_hold')
@@ -391,8 +409,18 @@ class GDPROrchestrator:
 
         failed = self._run_deletion_inprocess(user_id)
 
-        try:
-            from stapel_core.comm import emit
+        if failed:
+            logger.error(
+                'GDPR deletion incomplete [user=%s failed=%s] — left in DELETING for retry',
+                user_id, failed,
+            )
+            return
+
+        from stapel_core.comm import mutate_and_emit
+
+        with mutate_and_emit() as emit:
+            closure.local_erasure_done = True
+            closure.save(update_fields=['local_erasure_done'])
             emit(
                 'user.deleted',
                 {
@@ -402,19 +430,7 @@ class GDPROrchestrator:
                 },
                 key=str(user_id),
             )
-        except Exception as e:
-            logger.error('Failed to emit user.deleted [%s]: %s', user_id, e)
-            failed.append('__emit__')
 
-        if failed:
-            logger.error(
-                'GDPR deletion incomplete [user=%s failed=%s] — left in DELETING for retry',
-                user_id, failed,
-            )
-            return
-
-        closure.local_erasure_done = True
-        closure.save(update_fields=['local_erasure_done'])
         self._maybe_finalize(closure)
 
     def mark_section_erased(self, correlation_id: str, service: str) -> None:
