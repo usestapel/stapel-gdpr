@@ -34,6 +34,35 @@ jobs:
       - name: Import check
         run: python -c "import stapel_gdpr; print('import OK')"
 
+      - name: Install test dependencies
+        run: pip install pytest pytest-django pytest-cov
+
+      - name: Tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=stapel_gdpr \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --junitxml=junit.xml \
+            -o junit_family=legacy \
+            -v
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        with:
+          files: coverage.xml
+          flags: stapel-gdpr
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        uses: codecov/test-results-action@v1
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
   release-track:
     # Release gate — library-standard §7.4. Installs the package the way an end
     # user does: dependencies (incl. stapel-core) resolved from PyPI strictly by
