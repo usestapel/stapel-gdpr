@@ -3,7 +3,10 @@ from django.db import models
 from django.utils import timezone
 from datetime import timedelta
 
+from stapel_core.access import access
 
+
+@access.ops
 class DataExportRequest(models.Model):
     STATUS_PENDING    = 'pending'
     STATUS_PROCESSING = 'processing'
@@ -58,6 +61,7 @@ class DataExportRequest(models.Model):
         return self.download_token
 
 
+@access.ops
 class DataExportPart(models.Model):
     STATUS_PENDING = 'pending'
     STATUS_DONE    = 'done'
@@ -82,6 +86,7 @@ class DataExportPart(models.Model):
         unique_together = [('request', 'service')]
 
 
+@access.ops
 class AccountClosureRequest(models.Model):
     TRIGGER_MANUAL     = 'manual'
     TRIGGER_INACTIVITY = 'inactivity'
@@ -133,6 +138,7 @@ class AccountClosureRequest(models.Model):
         return not self.parts.exclude(status=AccountDeletionPart.STATUS_DONE).exists()
 
 
+@access.ops
 class AccountDeletionPart(models.Model):
     """Per-service deletion confirmation — mirrors DataExportPart.
 
@@ -183,6 +189,7 @@ class LegalHold(models.Model):
         return f'LegalHold({self.user_id}, {state})'
 
 
+@access.ops
 class ReRegistrationHash(models.Model):
     """Irreversible hashes of deleted-user PII for re-registration detection (24 months retention)."""
     TYPE_EMAIL = 'email'

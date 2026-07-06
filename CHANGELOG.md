@@ -3,6 +3,21 @@
 All notable changes to `stapel-gdpr` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- Admin-suite AS-5: `@access.ops` on `DataExportRequest`, `DataExportPart`,
+  `AccountClosureRequest`, `AccountDeletionPart`, and `ReRegistrationHash` —
+  their state machines are owned entirely by `GDPROrchestrator` / scheduled
+  tasks and were never meant to be hand-edited through the admin (MODULE.md
+  already said so in prose: "Do not flip `AccountClosureRequest.status` or
+  `AccountDeletionPart` rows directly"). `LegalHold` stays undecorated
+  (`business`) — placing/releasing a hold through `LegalHoldAdmin` is a real
+  staff workflow. `AccountClosureRequestAdmin`, `DataExportRequestAdmin`, and
+  `ReRegistrationHashAdmin` now subclass `stapel_core.django.admin.base.StapelModelAdmin`;
+  `ReRegistrationHashAdmin` additionally pins `secret_fields = ('hash_value',)`
+  to mask the PII hash. Class attribute only — no migration.
+
 ## 0.3.4 — 2026-07-06
 
 ### Changed

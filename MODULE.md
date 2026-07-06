@@ -84,6 +84,12 @@ All views subclass `GDPRAPIView` (`views.py`), which exposes `request_serializer
 
 This module defines and sends **no Django signals**. Business milestones travel as comm Actions (table above). In-process hooks for the host project belong to `stapel_core.signals` (none of which are GDPR-specific today); adding a GDPR signal is an upstream contribution.
 
+### Admin categories (`stapel_core.access`)
+
+`@access.ops` (admin-suite AS-5): `DataExportRequest`, `DataExportPart`, `AccountClosureRequest`, `AccountDeletionPart`, `ReRegistrationHash`. Every one of these is a state machine mutated exclusively by `GDPROrchestrator` (or, for `ReRegistrationHash`, `reregistration.store_hashes` / the retention-cleanup task) — there is no staff-facing review/approve/override action anywhere in `views.py` or `admin.py`. Closure cancellation is user-initiated only (`AccountCancelCloseView`, keyed off the authenticated requester, not a staff action). MODULE.md already documented the anti-pattern above: "Do not flip `AccountClosureRequest.status` or `AccountDeletionPart` rows directly" — `@access.ops` now enforces that at the admin layer (read-only, including for a superuser) instead of only in prose. `ReRegistrationHash` is a dedup/TTL-expiring record (24-month retention, cleaned up by `run_retention_cleanup`), not a credential — `ops`, not `secret` — but `hash_value` is still a hash of PII, so `ReRegistrationHashAdmin.secret_fields = ('hash_value',)` masks it explicitly regardless of category (the same pattern `stapel-core` uses for `session_key`/`session_data` on the `ops`-categorized `Session` admin).
+
+`LegalHold` is left undecorated (implicit `business`): placing a hold and releasing it (`released_at`) is a real, expected staff/compliance workflow through `LegalHoldAdmin` — see "Placing/releasing legal holds → `LegalHold` ORM/admin" above.
+
 ## Anti-patterns (tailored)
 
 - **Do not fork to add a data section to export/deletion.** Implement a `GDPRProvider` in *your* app and list it in `GDPR_PROVIDERS`, or subscribe to `user.deleted` + confirm with `gdpr.section.erased`.
