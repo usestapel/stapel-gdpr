@@ -33,3 +33,26 @@ jobs:
 
       - name: Import check
         run: python -c "import stapel_gdpr; print('import OK')"
+
+  release-track:
+    # Release gate — library-standard §7.4. Installs the package the way an end
+    # user does: dependencies (incl. stapel-core) resolved from PyPI strictly by
+    # the declared pins — no git-main core, no editable siblings. Catches "pin
+    # into the void" and drift between the core branch and the published wheel.
+    # Advisory (continue-on-error) until the whole stapel dependency graph is
+    # published on PyPI at compatible versions; drop continue-on-error to make a
+    # green run the blocking precondition for a vX.Y.Z tag.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install as an end user (deps resolved from PyPI by pin)
+        run: pip install .
+      - name: Verify stapel-core resolved from PyPI inside the 0.8 window
+        run: cd "$RUNNER_TEMP" && python -c "import importlib.metadata as m; v=m.version('stapel-core'); print('stapel-core', v); assert tuple(map(int, v.split('.')[:2]))==(0,8), v"
+      - name: Import smoke (installed package, from a clean dir)
+        run: cd "$RUNNER_TEMP" && python -c "import stapel_gdpr; print('release-track import OK')"
