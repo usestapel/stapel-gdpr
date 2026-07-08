@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/usestapel/stapel-gdpr/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-gdpr/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/usestapel/stapel-gdpr/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-gdpr)
+[![PyPI](https://img.shields.io/pypi/v/stapel-gdpr.svg)](https://pypi.org/project/stapel-gdpr/)
 
 > GDPR compliance — data export (Art. 15/20), account deletion with grace period (Art. 17), inactivity closure, retention cleanup
 
