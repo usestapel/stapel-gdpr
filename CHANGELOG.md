@@ -5,7 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-07-16
+
 ### Fixed
+- **`user.export_ready` is now actually emitted.** The emit schema
+  (`schemas/emits/user.export_ready.json`) existed but the code only sent
+  the `gdpr.export_ready` email notification — no comm event ever left
+  (2026-07-16 "silent contract lie" audit). Archive assembly now emits
+  `user.export_ready` (`user_id`, `request_id`, `download_expires_at`) in
+  one `mutate_and_emit()` outbox unit with the READY flip + download-token
+  write: a failing emit rolls READY back, so consumers are told about
+  exactly the exports that exist. The email stays best-effort.
 - **EMIT002 (outbox atomicity):** `initiate_closure()` and `execute_deletion()`
   swallowed a failing `emit()` behind a broad `except Exception: logger.error(...)`
   — the closure row (+ user deactivation) or the `local_erasure_done` flip

@@ -228,10 +228,28 @@ class GDPROrchestrator:
                     if file.is_file():
                         zf.write(file, f'{zip_root}/{file.relative_to(staging_dir)}')
 
+        from stapel_core.comm import mutate_and_emit
+
+        # READY flip + download token + ``user.export_ready`` are one outbox
+        # unit (schemas/emits/user.export_ready.json): a failing emit rolls
+        # the READY state back and propagates — an export consumers were
+        # never told about must not silently exist (same discipline as
+        # ``initiate_closure``). The email in ``_send_ready_notification``
+        # below stays best-effort; the *event* is the contract.
         req.archive_path = str(zip_path)
         req.status       = DataExportRequest.STATUS_READY
-        req.save(update_fields=['archive_path', 'status'])
-        req.generate_download_token()
+        with mutate_and_emit() as emit:
+            req.save(update_fields=['archive_path', 'status'])
+            req.generate_download_token()
+            emit(
+                'user.export_ready',
+                {
+                    'user_id': str(req.user_id),
+                    'request_id': req.pk,
+                    'download_expires_at': req.download_expires_at.isoformat(),
+                },
+                key=str(req.user_id),
+            )
 
         # PII must not linger in the staging area once zipped.
         if staging_dir.exists():

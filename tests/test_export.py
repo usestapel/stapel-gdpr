@@ -138,3 +138,51 @@ class TestAssemblyRace:
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_ASSEMBLING
         assert req.archive_path is None
+
+
+@pytest.mark.django_db
+class TestExportReadyEvent:
+    """user.export_ready must actually leave over comm when the archive is
+    assembled — the schema (schemas/emits/user.export_ready.json) existed
+    without any emit (2026-07-16 audit); only the email notification went
+    out. The emit is one outbox unit with the READY flip."""
+
+    def test_assembly_emits_schema_valid_event(self, user, fake_provider):
+        import jsonschema
+
+        import stapel_gdpr
+        from stapel_core.comm import subscribe_action
+
+        captured = []
+        subscribe_action("user.export_ready", lambda event: captured.append(event))
+
+        req = gdpr_orchestrator.request_export(user.pk)
+        gdpr_orchestrator.run_export(req.pk)
+
+        req.refresh_from_db()
+        assert req.status == DataExportRequest.STATUS_READY
+        assert len(captured) == 1
+        payload = captured[0].payload
+        assert payload["user_id"] == str(user.pk)
+        assert payload["request_id"] == req.pk
+        assert payload["download_expires_at"] == req.download_expires_at.isoformat()
+
+        schema = json.loads(
+            (
+                Path(stapel_gdpr.__file__).parent
+                / "schemas"
+                / "emits"
+                / "user.export_ready.json"
+            ).read_text()
+        )
+        jsonschema.validate(payload, schema)
+
+    def test_no_event_before_assembly(self, user, fake_provider):
+        from stapel_core.comm import subscribe_action
+
+        captured = []
+        subscribe_action("user.export_ready", lambda event: captured.append(event))
+
+        gdpr_orchestrator.request_export(user.pk)
+        # Export requested but not yet run/assembled — nothing must leave.
+        assert captured == []
