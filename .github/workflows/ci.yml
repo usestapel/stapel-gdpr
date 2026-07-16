@@ -88,7 +88,27 @@ jobs:
           cache: pip
       - name: Install as an end user (deps resolved from PyPI by pin)
         run: pip install .
-      - name: Verify stapel-core resolved from PyPI inside the 0.8 window
-        run: cd "$RUNNER_TEMP" && python -c "import importlib.metadata as m; v=m.version('stapel-core'); print('stapel-core', v); assert tuple(map(int, v.split('.')[:2]))==(0,8), v"
+      - name: Verify stapel-core resolved from PyPI satisfies the declared pin
+        # Reads the range straight out of pyproject.toml instead of a hardcoded
+        # tuple — the previous hardcoded `==(0,8)`/`==(0,10)` silently went stale
+        # (and failed every run) each time the pin was bumped, because nobody
+        # remembered to update this step in step with the dependency line.
+        run: |
+          cd "$RUNNER_TEMP" && python -c "
+          import importlib.metadata as m
+          import re
+          import tomllib
+          from pathlib import Path
+
+          pyproject = tomllib.loads(Path('$GITHUB_WORKSPACE/pyproject.toml').read_text())
+          dep = next(d for d in pyproject['project']['dependencies'] if d.startswith('stapel-core'))
+          floor_s, ceil_s = re.search(r'>=([\d.]+),<([\d.]+)', dep).groups()
+          floor = tuple(map(int, floor_s.split('.')))
+          ceil = tuple(map(int, ceil_s.split('.')))
+          v = m.version('stapel-core')
+          got = tuple(map(int, v.split('.')[:len(floor)]))
+          print(f'stapel-core {v} against {dep!r}')
+          assert floor <= got < ceil, f'{v} outside declared range {dep!r}'
+          "
       - name: Import smoke (installed package, from a clean dir)
         run: cd "$RUNNER_TEMP" && python -c "import stapel_gdpr; print('release-track import OK')"
