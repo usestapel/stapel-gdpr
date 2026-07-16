@@ -5,6 +5,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-07-17
+
+### Changed
+- `stapel-core` ceiling raised `>=0.10,<0.11` → `>=0.10,<0.12` (core 0.11
+  fleet re-pin: default bus, nav, config-checks, error params/language —
+  additive for modules). Suite green against core 0.11.2 (incl. the `s3`
+  extra), no code changes needed. Unblocks `stapel-tools` v0.11.0's publish
+  (its resolver conflict was this repo's `<0.11` ceiling).
+
 ## [0.3.7] — 2026-07-16
 
 ### Changed
