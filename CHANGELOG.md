@@ -5,6 +5,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-07-16
+
+### Changed
+- **v1 canon sweep §60** (api-versioning.md §2, §6): `urls.py` renamed to
+  `urls_v1.py` (paths inside unchanged); the new root `urls.py` mounts it
+  under `v1/`, so hosts including `stapel_gdpr.urls` under `.../api/` now
+  serve `/<mount>/api/v1/...`. Bare `/<mount>/api/...` paths no longer exist
+  (no live external consumers; sweep happens before the §3 gates are on).
+- Lint hygiene to a clean `stapel-verify`: `ERR_400_BAD_REQUEST` /
+  `ERR_403_FORBIDDEN` constants instead of raw strings (R005), explicit
+  `# noqa: R007` on the documented endpoints not yet attached to flows.
+
 ## [0.3.6] — 2026-07-16
 
 ### Fixed

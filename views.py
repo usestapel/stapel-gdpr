@@ -13,6 +13,8 @@ from rest_framework import permissions, serializers
 from rest_framework.request import Request
 from rest_framework.views import APIView
 from stapel_core.django.api.errors import (
+    ERR_400_BAD_REQUEST,
+    ERR_403_FORBIDDEN,
     StapelErrorResponse,
     StapelResponse,
     error_500_internal,
@@ -80,7 +82,7 @@ class DataExportRequestView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
-    def post(self, request: Request):
+    def post(self, request: Request):  # noqa: R007
         try:
             export_req = gdpr_orchestrator.request_export(request.user.pk)
         except ValueError as e:
@@ -111,7 +113,7 @@ class DataExportStatusView(GDPRAPIView):
         responses={200: ExportStatusSerializer},
         tags=["GDPR"],
     )
-    def get(self, request: Request):
+    def get(self, request: Request):  # noqa: R007
         export_req = (
             DataExportRequest.objects.filter(
                 user_id=request.user.pk,
@@ -169,7 +171,7 @@ class DataExportDownloadView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
-    def get(self, request: Request):
+    def get(self, request: Request):  # noqa: R007
         return self._serve(request, request.query_params.get("token", ""))
 
     @extend_schema(
@@ -197,7 +199,7 @@ class DataExportDownloadView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
-    def post(self, request: Request):
+    def post(self, request: Request):  # noqa: R007
         return self._serve(request, str(request.data.get("token", "")))
 
     def _serve(self, request: Request, token: str):
@@ -262,7 +264,7 @@ class AccountCloseView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
-    def post(self, request: Request):
+    def post(self, request: Request):  # noqa: R007
         try:
             closure = gdpr_orchestrator.initiate_closure(request.user.pk)
         except ValueError as e:
@@ -294,7 +296,7 @@ class AccountCancelCloseView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
-    def post(self, request: Request):
+    def post(self, request: Request):  # noqa: R007
         try:
             closure = gdpr_orchestrator.cancel_closure(request.user.pk)
         except ValueError:
@@ -318,7 +320,7 @@ class AccountCloseStatusView(GDPRAPIView):
         responses={200: ClosureStatusSerializer},
         tags=["GDPR"],
     )
-    def get(self, request: Request):
+    def get(self, request: Request):  # noqa: R007
         closure = (
             AccountClosureRequest.objects.filter(
                 user_id=request.user.pk,
@@ -356,15 +358,15 @@ class ExportPartReadyView(GDPRAPIView):
     ]  # replaced by IsServiceRequest in production
 
     @extend_schema(exclude=True)
-    def post(self, request: Request, request_id: int):
+    def post(self, request: Request, request_id: int):  # noqa: R007
         from stapel_core.django.api.permissions import IsServiceRequest
 
         if not IsServiceRequest().has_permission(request, self):
-            return StapelErrorResponse(403, "error.403.forbidden")
+            return StapelErrorResponse(403, ERR_403_FORBIDDEN)
 
         service = request.data.get("service", "")
         if not service:
-            return StapelErrorResponse(400, "error.400.bad_request")
+            return StapelErrorResponse(400, ERR_400_BAD_REQUEST)
         bucket_path = request.data.get("bucket_path", "")
 
         # mark_part_ready is keyed by correlation_id — resolve it from the
@@ -373,7 +375,7 @@ class ExportPartReadyView(GDPRAPIView):
 
         req = DataExportRequest.objects.filter(pk=request_id).first()
         if req is None:
-            return StapelErrorResponse(400, "error.400.bad_request")
+            return StapelErrorResponse(400, ERR_400_BAD_REQUEST)
 
         try:
             gdpr_orchestrator.mark_part_ready(req.correlation_id, service, bucket_path)

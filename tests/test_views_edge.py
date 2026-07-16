@@ -34,7 +34,7 @@ def _assert_error_envelope(resp, status, localizable_error):
 class TestDownloadMatrix:
     def test_get_without_token_404(self, authed_client, user):
         _assert_error_envelope(
-            authed_client.get("/gdpr/api/user/data-export/download"),
+            authed_client.get("/gdpr/api/v1/user/data-export/download"),
             404, "error.404.gdpr.export_not_found",
         )
 
@@ -48,7 +48,7 @@ class TestDownloadMatrix:
         )
         api_client.force_authenticate(user=other)
         _assert_error_envelope(
-            api_client.get(f"/gdpr/api/user/data-export/download?token={token}"),
+            api_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
             404, "error.404.gdpr.export_not_found",
         )
 
@@ -58,7 +58,7 @@ class TestDownloadMatrix:
             status=DataExportRequest.STATUS_PROCESSING,
         )
         _assert_error_envelope(
-            authed_client.get(f"/gdpr/api/user/data-export/download?token={token}"),
+            authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
             425, "error.425.gdpr.export_not_ready",
         )
 
@@ -70,7 +70,7 @@ class TestDownloadMatrix:
             download_expires_at=timezone.now() - timedelta(seconds=1),
         )
         _assert_error_envelope(
-            authed_client.get(f"/gdpr/api/user/data-export/download?token={token}"),
+            authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
             410, "error.410.gdpr.download_expired",
         )
         req.refresh_from_db()
@@ -82,14 +82,14 @@ class TestDownloadMatrix:
             archive_path=str(tmp_path / "vanished.zip"),
         )
         _assert_error_envelope(
-            authed_client.get(f"/gdpr/api/user/data-export/download?token={token}"),
+            authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
             500, "error.500.internal",
         )
 
     def test_post_success_streams_zip(self, authed_client, user, tmp_path):
         req, token = _ready_request(user, tmp_path)
         resp = authed_client.post(
-            "/gdpr/api/user/data-export/download", {"token": token}, format="json",
+            "/gdpr/api/v1/user/data-export/download", {"token": token}, format="json",
         )
         assert resp.status_code == 200
         assert resp["Content-Type"] == "application/zip"
@@ -108,7 +108,7 @@ class TestErrorBranches:
 
         monkeypatch.setattr(gdpr_orchestrator, "request_export", boom)
         _assert_error_envelope(
-            authed_client.post("/gdpr/api/user/data-export/request"),
+            authed_client.post("/gdpr/api/v1/user/data-export/request"),
             500, "error.500.internal",
         )
 
@@ -118,19 +118,19 @@ class TestErrorBranches:
 
         monkeypatch.setattr(gdpr_orchestrator, "initiate_closure", boom)
         _assert_error_envelope(
-            authed_client.post("/gdpr/api/user/account/close"),
+            authed_client.post("/gdpr/api/v1/user/account/close"),
             500, "error.500.internal",
         )
 
     def test_close_status_404_when_no_closure(self, authed_client):
         _assert_error_envelope(
-            authed_client.get("/gdpr/api/user/account/close/status"),
+            authed_client.get("/gdpr/api/v1/user/account/close/status"),
             404, "error.404.gdpr.no_active_closure",
         )
 
     def test_close_status_payload_shape(self, authed_client, user):
         gdpr_orchestrator.initiate_closure(user.pk)
-        resp = authed_client.get("/gdpr/api/user/account/close/status")
+        resp = authed_client.get("/gdpr/api/v1/user/account/close/status")
         assert resp.status_code == 200
         body = resp.json()
         assert set(body) == {"status", "grace_ends_at", "can_cancel"}
@@ -138,7 +138,7 @@ class TestErrorBranches:
         assert body["can_cancel"] is True
 
     def test_export_request_payload_shape(self, authed_client, user):
-        resp = authed_client.post("/gdpr/api/user/data-export/request")
+        resp = authed_client.post("/gdpr/api/v1/user/data-export/request")
         assert resp.status_code == 202
         body = resp.json()
         assert set(body) == {"request_id", "status", "message"}
@@ -148,7 +148,7 @@ class TestErrorBranches:
     def test_export_status_payload_shape(self, authed_client, user, settings):
         settings.GDPR_COLLECTING_SERVICES = ["auth", "cdn"]
         gdpr_orchestrator.request_export(user.pk)
-        resp = authed_client.get("/gdpr/api/user/data-export/status")
+        resp = authed_client.get("/gdpr/api/v1/user/data-export/status")
         assert resp.status_code == 200
         body = resp.json()
         assert set(body) == {
@@ -169,14 +169,14 @@ class TestPartReadyBranches:
         settings.GDPR_COLLECTING_SERVICES = ["auth"]
         req = gdpr_orchestrator.request_export(user.pk)
         resp = authed_client.post(
-            f"/gdpr/api/internal/export/{req.pk}/part-ready",
+            f"/gdpr/api/v1/internal/export/{req.pk}/part-ready",
             {}, format="json", headers=self.HEADERS,
         )
         _assert_error_envelope(resp, 400, "error.400.bad_request")
 
     def test_unknown_request_400(self, authed_client, db):
         resp = authed_client.post(
-            "/gdpr/api/internal/export/999999/part-ready",
+            "/gdpr/api/v1/internal/export/999999/part-ready",
             {"service": "auth"}, format="json", headers=self.HEADERS,
         )
         _assert_error_envelope(resp, 400, "error.400.bad_request")
@@ -190,7 +190,7 @@ class TestPartReadyBranches:
 
         monkeypatch.setattr(gdpr_orchestrator, "mark_part_ready", boom)
         resp = authed_client.post(
-            f"/gdpr/api/internal/export/{req.pk}/part-ready",
+            f"/gdpr/api/v1/internal/export/{req.pk}/part-ready",
             {"service": "auth"}, format="json", headers=self.HEADERS,
         )
         _assert_error_envelope(resp, 500, "error.500.internal")

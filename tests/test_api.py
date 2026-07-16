@@ -11,24 +11,24 @@ from stapel_gdpr.models import AccountClosureRequest, DataExportRequest, LegalHo
 @pytest.mark.django_db
 class TestExportAPI:
     def test_request_export(self, authed_client, user):
-        resp = authed_client.post("/gdpr/api/user/data-export/request")
+        resp = authed_client.post("/gdpr/api/v1/user/data-export/request")
         assert resp.status_code == 202
         req = DataExportRequest.objects.get(user_id=user.pk)
         # celery eager: the export ran inline; no providers -> assembled empty
         assert req.status == DataExportRequest.STATUS_READY
 
     def test_request_export_cooldown(self, authed_client, user):
-        authed_client.post("/gdpr/api/user/data-export/request")
-        resp = authed_client.post("/gdpr/api/user/data-export/request")
+        authed_client.post("/gdpr/api/v1/user/data-export/request")
+        resp = authed_client.post("/gdpr/api/v1/user/data-export/request")
         assert resp.status_code == 409
 
     def test_status(self, authed_client, user):
-        authed_client.post("/gdpr/api/user/data-export/request")
-        resp = authed_client.get("/gdpr/api/user/data-export/status")
+        authed_client.post("/gdpr/api/v1/user/data-export/request")
+        resp = authed_client.get("/gdpr/api/v1/user/data-export/status")
         assert resp.status_code == 200
 
     def test_status_not_found(self, authed_client, user):
-        resp = authed_client.get("/gdpr/api/user/data-export/status")
+        resp = authed_client.get("/gdpr/api/v1/user/data-export/status")
         assert resp.status_code == 404
 
     def test_download_get_and_post(self, authed_client, user, tmp_path):
@@ -46,22 +46,22 @@ class TestExportAPI:
         )
         token = req.generate_download_token()
 
-        resp = authed_client.get(f"/gdpr/api/user/data-export/download?token={token}")
+        resp = authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}")
         assert resp.status_code == 200
         assert resp["Content-Type"] == "application/zip"
 
         resp = authed_client.post(
-            "/gdpr/api/user/data-export/download", {"token": token}, format="json",
+            "/gdpr/api/v1/user/data-export/download", {"token": token}, format="json",
         )
         assert resp.status_code == 200
 
         resp = authed_client.post(
-            "/gdpr/api/user/data-export/download", {"token": "wrong"}, format="json",
+            "/gdpr/api/v1/user/data-export/download", {"token": "wrong"}, format="json",
         )
         assert resp.status_code == 404
 
         resp = authed_client.post(
-            "/gdpr/api/user/data-export/download", {}, format="json",
+            "/gdpr/api/v1/user/data-export/download", {}, format="json",
         )
         assert resp.status_code == 404
 
@@ -78,43 +78,43 @@ class TestExportAPI:
         DataExportRequest.objects.filter(pk=req.pk).update(
             download_expires_at=timezone.now() - timedelta(minutes=1),
         )
-        resp = authed_client.get(f"/gdpr/api/user/data-export/download?token={token}")
+        resp = authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}")
         assert resp.status_code == 410
 
     def test_unauthenticated_rejected(self, api_client, db):
-        resp = api_client.post("/gdpr/api/user/data-export/request")
+        resp = api_client.post("/gdpr/api/v1/user/data-export/request")
         assert resp.status_code in (401, 403)
 
 
 @pytest.mark.django_db
 class TestClosureAPI:
     def test_close_cancel_status_lifecycle(self, authed_client, user):
-        resp = authed_client.post("/gdpr/api/user/account/close")
+        resp = authed_client.post("/gdpr/api/v1/user/account/close")
         assert resp.status_code == 202
         closure = AccountClosureRequest.objects.get(user_id=user.pk)
         assert closure.status == AccountClosureRequest.STATUS_GRACE
 
-        resp = authed_client.get("/gdpr/api/user/account/close/status")
+        resp = authed_client.get("/gdpr/api/v1/user/account/close/status")
         assert resp.status_code == 200
 
-        resp = authed_client.post("/gdpr/api/user/account/cancel-close")
+        resp = authed_client.post("/gdpr/api/v1/user/account/cancel-close")
         assert resp.status_code == 200
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_CANCELLED
 
     def test_close_twice_409(self, authed_client, user):
-        authed_client.post("/gdpr/api/user/account/close")
-        resp = authed_client.post("/gdpr/api/user/account/close")
+        authed_client.post("/gdpr/api/v1/user/account/close")
+        resp = authed_client.post("/gdpr/api/v1/user/account/close")
         assert resp.status_code == 409
 
     def test_legal_hold_409(self, authed_client, user):
         LegalHold.objects.create(user_id=user.pk, reason="litigation")
-        resp = authed_client.post("/gdpr/api/user/account/close")
+        resp = authed_client.post("/gdpr/api/v1/user/account/close")
         assert resp.status_code == 409
         assert "legal_hold" in resp.content.decode()
 
     def test_cancel_without_closure_404(self, authed_client, user):
-        resp = authed_client.post("/gdpr/api/user/account/cancel-close")
+        resp = authed_client.post("/gdpr/api/v1/user/account/cancel-close")
         assert resp.status_code == 404
 
 
@@ -125,7 +125,7 @@ class TestInternalAPI:
         from stapel_gdpr.orchestrator import gdpr_orchestrator
 
         req = gdpr_orchestrator.request_export(user.pk)
-        url = f"/gdpr/api/internal/export/{req.pk}/part-ready"
+        url = f"/gdpr/api/v1/internal/export/{req.pk}/part-ready"
 
         resp = authed_client.post(url, {"service": "auth"}, format="json")
         assert resp.status_code == 403
