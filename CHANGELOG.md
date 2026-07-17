@@ -5,6 +5,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.10] — 2026-07-17
+
+Fleet follow-up to stapel-core 0.12.0 (legacy shim sweep — dropped
+`django.{utils,jwt_provider,authentication}` shims, IRON_HOST, flat CAPTCHA,
+JWTStatusView flat user block). No source changes needed: stapel-gdpr does
+not touch any of the removed surfaces. Full suite green (107 passed) against
+core 0.12.0.
+
+### Changed
+- `stapel-core` dependency ceiling `<0.12` → `<0.13`.
+
 ## [0.3.9] — 2026-07-17
 
 ### Removed
