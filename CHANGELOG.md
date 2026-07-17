@@ -5,6 +5,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-07-17
+
+### Removed
+- Legacy sweep: two dead unassigned expressions in
+  `tasks.check_inactive_accounts` (`now - timedelta(days=365 - 60)` /
+  `... - 14)`) — leftovers of a refactor; the warning cutoffs are computed
+  inside the loop. No behavior change, no public surface touched.
+
 ## [0.3.8] — 2026-07-17
 
 ### Changed

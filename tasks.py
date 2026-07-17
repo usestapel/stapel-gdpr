@@ -86,9 +86,7 @@ def check_inactive_accounts():
     User = get_user_model()
     now  = timezone.now()
 
-    cutoff_close   = now - timedelta(days=365)
-    now - timedelta(days=365 - 60)
-    now - timedelta(days=365 - 14)
+    cutoff_close = now - timedelta(days=365)
 
     # Users to close now
     inactive_to_close = User.objects.filter(
