@@ -1,0 +1,46 @@
+{
+  "module": "stapel-gdpr",
+  "version": "0.3.10",
+  "provides": "GDPR compliance: staged async data export (Art. 15/20) with status polling and download, account deletion with a cancellable grace period (Art. 17), inactivity closure, retention cleanup, LegalHold (blocks closure/deletion) and ReRegistrationHash, orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote services.",
+  "axes": [
+    {
+      "key": "REMOTE_DELETION_SERVICES",
+      "kind": "list",
+      "default": [],
+      "group": "gdpr.deletion",
+      "gates": {
+        "operations": [],
+        "co_gates": []
+      },
+      "curated": {
+        "summary": "Service names that must confirm erasure via a gdpr.section.erased comm action before a closure is marked deleted; one AccountDeletionPart is created per entry in execute_deletion (conf.py, MODULE.md Extension points table).",
+        "business_label": "Remote services that must confirm account erasure"
+      }
+    }
+  ],
+  "extension_points": [
+    {
+      "name": "GDPR_PROVIDERS",
+      "kind": "dotted_path_list",
+      "summary": "Flat Django setting: list of GDPRProvider class paths loaded via import_string and registered into stapel_core.gdpr.gdpr_registry in apps.py ready() — no compile-time dependency on any service package (MODULE.md 'Deletion parts', apps.py:18-style registration)."
+    },
+    {
+      "name": "deletion_parts",
+      "kind": "protocol",
+      "summary": "Three fork-free ways a module/app participates in account deletion: an in-process GDPRProvider (export/delete/anonymize), a comm subscriber that confirms via gdpr.section.erased (opt in via REMOTE_DELETION_SERVICES), or a remote GDPRServiceConsumerCommand in microservices mode (MODULE.md 'Deletion parts — how a module/app participates')."
+    },
+    {
+      "name": "serializer_seams",
+      "kind": "class_override",
+      "summary": "Every view subclasses GDPRAPIView (request_serializer_class/response_serializer_class + get_* getters); subclass and remount to reshape a response envelope (views.py:45-56, MODULE.md 'Serializer seams')."
+    }
+  ],
+  "operations_total": 8,
+  "requires": [
+    {
+      "module": "stapel-core",
+      "optional": false,
+      "reason": "GDPRProvider registry (stapel_core.gdpr.gdpr_registry), comm bus (user.deletion_initiated/user.deleted emits, gdpr.section.erased consume), notifications request helper (pyproject.toml dependency; MODULE.md comm surface)"
+    }
+  ]
+}
