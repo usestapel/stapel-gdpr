@@ -33,7 +33,12 @@ class TestConsumeGdprCompletions:
         ))
 
         out = StringIO()
-        call_command("consume_gdpr_completions", stdout=out)
+        # `--allow-in-process` is exactly what this flag exists for: publisher
+        # and consumer are the same process here, which in production is the
+        # failure mode stapel-core 0.14.2 started refusing (an in-process bus
+        # under a separate consumer container drains an empty queue, exits and
+        # restarts forever — the ironmemo stand did that for weeks, silently).
+        call_command("consume_gdpr_completions", stdout=out, allow_in_process=True)
 
         assert "Starting consumer group=gdpr-orchestrator" in out.getvalue()
         req.refresh_from_db()
