@@ -49,7 +49,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-stapel_gdpr = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py"]
+stapel_gdpr = ["py.typed", "migrations/*.py", "schemas/**/*.json", "migrations/**/*.py", "docs/capabilities.json", "docs/flows.json", "docs/errors.json", "CONFIG.MD"]
 
 [tool.ruff]
 target-version = "py311"
