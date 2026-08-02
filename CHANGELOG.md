@@ -5,6 +5,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.12] — 2026-08-02
+
+### Added
+- `docs/llms.txt` — the fifth contract artifact, an agent-sized slice of the
+  hand-authored `docs/capabilities.json`, wired into `make contract` /
+  `make contract-check` (badge-canon §3). `docs/capabilities.json`'s
+  `version` field resynced to `pyproject.toml` (it had drifted to 0.3.10
+  across the 0.3.11 release).
+- Badge canon in README (CI/coverage/pypi/downloads/python/license),
+  `migration-lint` uncommented in CI now that stapel-tools is on PyPI,
+  classifier 3.14.
+- CI matrix now tests Python 3.14 (the version actually in production),
+  alongside the existing 3.11-3.13.
+
+### Fixed
+- `docs/capabilities.json`, `docs/flows.json`, `docs/errors.json`,
+  `docs/llms.txt` and `CONFIG.MD` now ship in the wheel via `package-data`
+  (#184); previously repo-only, invisible to `--from-installed` tooling.
+
+### Tests
+- `test_consumer.py` passes `--allow-in-process` explicitly where the
+  publisher and consumer really are the same process, documenting the
+  legitimate exception to core 0.14.2's in-process-bus consumer guard.
+
 ## [0.3.10] — 2026-07-17
 
 Fleet follow-up to stapel-core 0.12.0 (legacy shim sweep — dropped
