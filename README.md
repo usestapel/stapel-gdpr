@@ -1,8 +1,11 @@
 # stapel-gdpr
 
-[![CI](https://github.com/usestapel/stapel-gdpr/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-gdpr/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/usestapel/stapel-gdpr/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-gdpr)
-[![PyPI](https://img.shields.io/pypi/v/stapel-gdpr.svg)](https://pypi.org/project/stapel-gdpr/)
+[![CI](https://img.shields.io/github/actions/workflow/status/usestapel/stapel-gdpr/ci.yml?branch=main&logo=github&label=CI)](https://github.com/usestapel/stapel-gdpr/actions/workflows/ci.yml?query=branch%3Amain)
+[![coverage](https://img.shields.io/codecov/c/github/usestapel/stapel-gdpr?branch=main&logo=codecov&label=coverage)](https://app.codecov.io/gh/usestapel/stapel-gdpr)
+[![pypi](https://img.shields.io/pypi/v/stapel-gdpr?logo=pypi&logoColor=white&label=pypi)](https://pypi.org/project/stapel-gdpr/)
+[![downloads](https://static.pepy.tech/badge/stapel-gdpr/month)](https://pepy.tech/project/stapel-gdpr)
+[![python](https://img.shields.io/pypi/pyversions/stapel-gdpr?logo=python&logoColor=white)](https://pypi.org/project/stapel-gdpr/)
+[![license](https://img.shields.io/github/license/usestapel/stapel-gdpr)](https://github.com/usestapel/stapel-gdpr/blob/main/LICENSE)
 
 > GDPR compliance — data export (Art. 15/20), account deletion with grace period (Art. 17), inactivity closure, retention cleanup
 
