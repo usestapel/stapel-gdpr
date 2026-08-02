@@ -1,0 +1,22 @@
+# stapel-gdpr 0.3.10
+
+GDPR compliance: staged async data export (Art. 15/20) with status polling and download, account deletion with a cancellable grace period (Art. 17), inactivity closure, retention cleanup, LegalHold (blocks closure/deletion) and ReRegistrationHash, orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote services.
+
+Contract: axes 1 · extension points 3.
+Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
+
+## Configuration axes — what a product switches on
+Settings keys; `default` is what you get by saying nothing. Turning an axis off unmounts the operations it gates.
+- REMOTE_DELETION_SERVICES [list, default []] — Remote services that must confirm account erasure
+  Service names that must confirm erasure via a gdpr.section.erased comm action before a closure is marked deleted; one AccountDeletionPart is created per entry in execute_deletion (conf.py, MODULE.md Extension points table).
+
+## Extension points — what a product replaces, fork-free
+- GDPR_PROVIDERS [dotted_path_list]
+  Flat Django setting: list of GDPRProvider class paths loaded via import_string and registered into stapel_core.gdpr.gdpr_registry in apps.py ready() — no compile-time dependency on any service package (MODULE.md 'Deletion parts', apps.py:18-style registration).
+- deletion_parts [protocol]
+  Three fork-free ways a module/app participates in account deletion: an in-process GDPRProvider (export/delete/anonymize), a comm subscriber that confirms via gdpr.section.erased (opt in via REMOTE_DELETION_SERVICES), or a remote GDPRServiceConsumerCommand in microservices mode (MODULE.md 'Deletion parts — how a module/app participates').
+- serializer_seams [class_override]
+  Every view subclasses GDPRAPIView (request_serializer_class/response_serializer_class + get_* getters); subclass and remount to reshape a response envelope (views.py:45-56, MODULE.md 'Serializer seams').
+
+## Fits with — fleet dependencies
+- stapel-core (required) — GDPRProvider registry (stapel_core.gdpr.gdpr_registry), comm bus (user.deletion_initiated/user.deleted emits, gdpr.section.erased consume), notifications request helper (pyproject.toml dependency; MODULE.md comm surface)

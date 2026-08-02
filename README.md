@@ -6,6 +6,7 @@
 [![downloads](https://static.pepy.tech/badge/stapel-gdpr/month)](https://pepy.tech/project/stapel-gdpr)
 [![python](https://img.shields.io/pypi/pyversions/stapel-gdpr?logo=python&logoColor=white)](https://pypi.org/project/stapel-gdpr/)
 [![license](https://img.shields.io/github/license/usestapel/stapel-gdpr)](https://github.com/usestapel/stapel-gdpr/blob/main/LICENSE)
+[![llms.txt](https://img.shields.io/badge/llms.txt-blue)](https://github.com/usestapel/stapel-gdpr/blob/main/docs/llms.txt)
 
 > GDPR compliance — data export (Art. 15/20), account deletion with grace period (Art. 17), inactivity closure, retention cleanup
 
