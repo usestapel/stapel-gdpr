@@ -2,13 +2,42 @@
 
 GDPR compliance: staged async data export (Art. 15/20) with status polling and download, account deletion with a cancellable grace period (Art. 17), inactivity closure, retention cleanup, LegalHold (blocks closure/deletion) and ReRegistrationHash, orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote services.
 
-Contract: axes 1 · extension points 3.
+Contract: axes 1 · surface 10 · extension points 3.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
 Settings keys; `default` is what you get by saying nothing. Turning an axis off unmounts the operations it gates.
 - REMOTE_DELETION_SERVICES [list, default []] — Remote services that must confirm account erasure
   Service names that must confirm erasure via a gdpr.section.erased comm action before a closure is marked deleted; one AccountDeletionPart is created per entry in execute_deletion (conf.py, MODULE.md Extension points table).
+
+## Usage surface — call these before writing your own
+This is the answer to "does Stapel already have something for X?". `instead of` names the outside symbol this one displaces.
+### gate_function
+- check_inactive_accounts — stapel_gdpr.tasks.check_inactive_accounts
+  Daily Celery task: sends 60-day and 14-day inactivity warning emails, then initiates closure at the 365-day inactivity mark. Wire it via get_gdpr_beat_schedule — this is the entire mechanism behind the module's inactivity-closure axis, there is no other trigger.
+- notify_llm_providers_of_deletion — stapel_gdpr.tasks.notify_llm_providers_of_deletion
+  Call this from a custom GDPRProvider's delete()/anonymize() whenever that provider's data was ever sent to a third-party LLM provider, to leave an auditable log line of the DPA deletion obligation you still must action manually (this module does not call any LLM provider's API itself). Nothing in stapel-gdpr wires this automatically — it exists only to be called from your own provider, and an unwired one is silent by construction.
+- process_expired_grace_periods — stapel_gdpr.tasks.process_expired_grace_periods
+  The Celery task that actually calls GDPROrchestrator.execute_deletion() for every account whose 30-day grace period elapsed, skipping users under an active LegalHold. This is the ONLY path that turns a scheduled closure into a real erasure — a deployment that forgot to register get_gdpr_beat_schedule() has working closure/cancel endpoints and never deletes a single account, with nothing anywhere saying so.
+- run_data_export — stapel_gdpr.tasks.run_data_export
+  The Celery task that actually runs a single export request's in-process providers and assembles the archive. Normally triggered internally via `.delay()` from DataExportRequestView — call it directly only to retry/backfill one specific request_id.
+- run_retention_cleanup — stapel_gdpr.tasks.run_retention_cleanup
+  Daily Celery task that purges ReRegistrationHash rows past their 24-month retention, skipping users under an active LegalHold. Wire it via get_gdpr_beat_schedule; without it expired hashes accumulate forever instead of aging out on schedule.
+- sweep_pending_exports — stapel_gdpr.tasks.sweep_pending_exports
+  Hourly Celery task that force-assembles a partial archive for any export request whose 24h deadline passed (a service down mid-export, or one that never responded). Wire it via get_gdpr_beat_schedule; call directly only for an out-of-band admin sweep.
+### predicate
+- is_reregistration — stapel_gdpr.reregistration.is_reregistration
+  instead of: stapel_gdpr.models.ReRegistrationHash.objects.filter(...) queried directly from a signup view
+  The signup-time check: true if this email/phone belonged to a previously erased account within the 24-month retention window (part of stapel_gdpr.__all__). Call this from ANY registration/invite-acceptance flow instead of querying ReRegistrationHash directly — the salt and normalization here must match store_hashes' write side exactly, and a hand-rolled lookup silently never matches (wrong case-fold, wrong phone digit-stripping), making banned/deleted users re-registering invisible.
+### factory
+- compute_hash — stapel_gdpr.reregistration.compute_hash
+  The low-level salted SHA-256 primitive underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration instead unless you are writing a one-off data migration/backfill that needs the exact same hash for an existing ReRegistrationHash row.
+- get_gdpr_beat_schedule — stapel_gdpr.tasks.get_gdpr_beat_schedule
+  instead of: hand-authored CELERY_BEAT_SCHEDULE crontab entries for GDPR sweeps
+  Spread `**get_gdpr_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all four scheduled GDPR workers (export-deadline sweep, grace-period deletion, inactivity checker, retention cleanup) at once. Hand-authoring these four crontab entries yourself is how one gets silently dropped — most importantly process_expired_grace_periods, without which grace-period deletions never execute even though the API says a closure is scheduled.
+- store_hashes — stapel_gdpr.reregistration.store_hashes
+  instead of: hand-rolled hashing of email/phone for post-deletion re-registration memory
+  Persist salted re-registration hashes for a user about to be erased (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls this before erasure runs; reach for it directly only from a custom deletion path that bypasses the orchestrator — never hand-roll the hashing, it must stay byte-for-byte compatible with is_reregistration's read side.
 
 ## Extension points — what a product replaces, fork-free
 - GDPR_PROVIDERS [dotted_path_list]

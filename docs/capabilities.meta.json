@@ -1,0 +1,60 @@
+{
+  "_comment": "Curated layer for the `surface` section of docs/capabilities.json (discoverability-design.md §1.2). NOTE the honest boundary: stapel-gdpr's capabilities.json is otherwise still HAND-WRITTEN (git log: 'author capabilities.json for the stapel-catalog sweep') — this module has no gate registry and no docs/schema.json, so provides/axes/extension_points/operations_total/requires are not derived from code and are not drift-gated. `make contract` patches in the two derivable things: module/version from pyproject and the derived `surface`. The module's main call surface — the gdpr_orchestrator singleton (request_export/initiate_closure/cancel_closure/execute_deletion) — has NO representation here: the closed selector set (permission_classes/functions/capability_fields/templates) has no selector for 'methods of a published singleton instance', only module-level functions/classes/fields/templates. That gap is real, not an oversight; `provides` already names the orchestrator in prose. What IS representable and IS selected below: the two standalone modules a product is meant to call directly instead of re-deriving the same logic — the signup-time re-registration check (reregistration.py) and the Celery beat wiring for the four scheduled GDPR workers (tasks.py), whose entire risk shape (a scheduled worker nobody wired into CELERY_BEAT_SCHEDULE silently never runs) matches the incident this section exists to prevent.",
+
+  "surface_roots": [
+    {"select": "functions", "path": "reregistration.py"},
+    {"select": "functions", "path": "tasks.py"}
+  ],
+
+  "surface": {
+    "is_reregistration": {
+      "kind": "predicate",
+      "intent": "The signup-time check: true if this email/phone belonged to a previously erased account within the 24-month retention window (part of stapel_gdpr.__all__). Call this from ANY registration/invite-acceptance flow instead of querying ReRegistrationHash directly — the salt and normalization here must match store_hashes' write side exactly, and a hand-rolled lookup silently never matches (wrong case-fold, wrong phone digit-stripping), making banned/deleted users re-registering invisible.",
+      "instead_of": [
+        "stapel_gdpr.models.ReRegistrationHash.objects.filter(...) queried directly from a signup view"
+      ]
+    },
+    "store_hashes": {
+      "kind": "factory",
+      "intent": "Persist salted re-registration hashes for a user about to be erased (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls this before erasure runs; reach for it directly only from a custom deletion path that bypasses the orchestrator — never hand-roll the hashing, it must stay byte-for-byte compatible with is_reregistration's read side.",
+      "instead_of": [
+        "hand-rolled hashing of email/phone for post-deletion re-registration memory"
+      ]
+    },
+    "compute_hash": {
+      "kind": "factory",
+      "intent": "The low-level salted SHA-256 primitive underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration instead unless you are writing a one-off data migration/backfill that needs the exact same hash for an existing ReRegistrationHash row."
+    },
+    "get_gdpr_beat_schedule": {
+      "kind": "factory",
+      "intent": "Spread `**get_gdpr_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all four scheduled GDPR workers (export-deadline sweep, grace-period deletion, inactivity checker, retention cleanup) at once. Hand-authoring these four crontab entries yourself is how one gets silently dropped — most importantly process_expired_grace_periods, without which grace-period deletions never execute even though the API says a closure is scheduled.",
+      "instead_of": [
+        "hand-authored CELERY_BEAT_SCHEDULE crontab entries for GDPR sweeps"
+      ]
+    },
+    "process_expired_grace_periods": {
+      "kind": "gate_function",
+      "intent": "The Celery task that actually calls GDPROrchestrator.execute_deletion() for every account whose 30-day grace period elapsed, skipping users under an active LegalHold. This is the ONLY path that turns a scheduled closure into a real erasure — a deployment that forgot to register get_gdpr_beat_schedule() has working closure/cancel endpoints and never deletes a single account, with nothing anywhere saying so."
+    },
+    "sweep_pending_exports": {
+      "kind": "gate_function",
+      "intent": "Hourly Celery task that force-assembles a partial archive for any export request whose 24h deadline passed (a service down mid-export, or one that never responded). Wire it via get_gdpr_beat_schedule; call directly only for an out-of-band admin sweep."
+    },
+    "check_inactive_accounts": {
+      "kind": "gate_function",
+      "intent": "Daily Celery task: sends 60-day and 14-day inactivity warning emails, then initiates closure at the 365-day inactivity mark. Wire it via get_gdpr_beat_schedule — this is the entire mechanism behind the module's inactivity-closure axis, there is no other trigger."
+    },
+    "run_retention_cleanup": {
+      "kind": "gate_function",
+      "intent": "Daily Celery task that purges ReRegistrationHash rows past their 24-month retention, skipping users under an active LegalHold. Wire it via get_gdpr_beat_schedule; without it expired hashes accumulate forever instead of aging out on schedule."
+    },
+    "run_data_export": {
+      "kind": "gate_function",
+      "intent": "The Celery task that actually runs a single export request's in-process providers and assembles the archive. Normally triggered internally via `.delay()` from DataExportRequestView — call it directly only to retry/backfill one specific request_id."
+    },
+    "notify_llm_providers_of_deletion": {
+      "kind": "gate_function",
+      "intent": "Call this from a custom GDPRProvider's delete()/anonymize() whenever that provider's data was ever sent to a third-party LLM provider, to leave an auditable log line of the DPA deletion obligation you still must action manually (this module does not call any LLM provider's API itself). Nothing in stapel-gdpr wires this automatically — it exists only to be called from your own provider, and an unwired one is silent by construction."
+    }
+  }
+}
