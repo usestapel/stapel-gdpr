@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.sessions_revoked",
+  "description": "Every session and access JTI of this user must be revoked now. Emitted inside the account-closure transaction, so it leaves iff the closure commits. An auth service that holds session rows MUST subscribe: without a subscriber (and without an in-process revoker) closure fails closed rather than leaving pre-closure tokens alive.",
+  "type": "object",
+  "required": ["user_id"],
+  "properties": {
+    "user_id": { "type": "string", "format": "uuid" },
+    "reason":  { "type": "string" }
+  },
+  "additionalProperties": false
+}

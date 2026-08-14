@@ -33,8 +33,12 @@ class TestExportPipeline:
 
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_READY
-        assert req.download_token
-        assert req.download_expires_at > timezone.now() + timedelta(days=6)
+        # Only the digest is stored, and the window is hours, not a week.
+        assert req.download_token is None
+        assert req.download_token_hash
+        assert req.download_consumed_at is None
+        assert req.download_expires_at > timezone.now() + timedelta(hours=23)
+        assert req.download_expires_at < timezone.now() + timedelta(hours=25)
 
         # archive lands under MEDIA_ROOT/gdpr/exports with the provider data
         archive = Path(req.archive_path)
@@ -104,7 +108,7 @@ class TestRemotePartsAndSweep:
         with zipfile.ZipFile(req.archive_path) as zf:
             readme = next(n for n in zf.namelist() if n.endswith("README.txt"))
             text = zf.read(readme).decode()
-            assert "partial export" in text
+            assert "PARTIAL export" in text
             assert "cdn" in text
 
 
@@ -114,7 +118,7 @@ class TestAssemblyRace:
         req = gdpr_orchestrator.request_export(user.pk)
         gdpr_orchestrator.run_export(req.pk)
         req.refresh_from_db()
-        token_before = req.download_token
+        token_before = req.download_token_hash
         mtime_before = Path(req.archive_path).stat().st_mtime_ns
 
         # a late duplicate completion must be a no-op
@@ -122,7 +126,7 @@ class TestAssemblyRace:
         gdpr_orchestrator.mark_part_ready(req.correlation_id, "fake", "")
 
         req.refresh_from_db()
-        assert req.download_token == token_before
+        assert req.download_token_hash == token_before
         assert Path(req.archive_path).stat().st_mtime_ns == mtime_before
 
     def test_assembling_status_blocks_second_builder(self, settings, user):
@@ -186,3 +190,113 @@ class TestExportReadyEvent:
         gdpr_orchestrator.request_export(user.pk)
         # Export requested but not yet run/assembled — nothing must leave.
         assert captured == []
+
+
+@pytest.mark.django_db
+class TestBucketPathBoundary:
+    """A peer service's `bucket_path` is remote input (audit 2026-08-11).
+
+    It arrives over HTTP (ExportPartReadyView) or the bus, and whatever it
+    names is copied verbatim into an archive a USER downloads. Django's
+    FileSystemStorage refuses traversal; an S3 backend does not — keys are
+    opaque strings there. So the shape is checked here, at both ends: when
+    the part is accepted, and again when the object is opened.
+    """
+
+    def _staged(self, req, key, body=b'{"leaked": true}'):
+        from django.core.files.base import ContentFile
+        from django.core.files.storage import default_storage
+
+        default_storage.save(key, ContentFile(body))
+        return key
+
+    def test_a_key_outside_this_export_is_refused_on_ingest(self, settings, user):
+        """A peer may only name a key belonging to the export it was asked about."""
+        settings.GDPR_COLLECTING_SERVICES = ["auth"]
+        req = gdpr_orchestrator.request_export(user.pk)
+        foreign = self._staged(req, "gdpr/some-other-correlation/auth/export.json")
+
+        gdpr_orchestrator.mark_part_ready(req.correlation_id, "auth", foreign)
+
+        part = req.parts.get(service="auth")
+        assert part.status != DataExportPart.STATUS_DONE
+        assert not part.bucket_path
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "gdpr/../../etc/passwd",
+            "/etc/passwd",
+            "s3://other-bucket/secrets.json",
+            "gdpr/{cid}/auth/../../../other/export.json",
+        ],
+    )
+    def test_traversal_and_absolute_keys_are_refused(self, settings, user, key):
+        settings.GDPR_COLLECTING_SERVICES = ["auth"]
+        req = gdpr_orchestrator.request_export(user.pk)
+
+        gdpr_orchestrator.mark_part_ready(
+            req.correlation_id, "auth", key.format(cid=req.correlation_id)
+        )
+
+        assert req.parts.get(service="auth").status != DataExportPart.STATUS_DONE
+
+    def test_a_stored_foreign_key_is_never_opened(self, settings, user, tmp_path):
+        """Rows written before the rule, or by something other than the
+        orchestrator, must not be readable either."""
+        settings.GDPR_COLLECTING_SERVICES = ["auth"]
+        req = gdpr_orchestrator.request_export(user.pk)
+        foreign = self._staged(req, "gdpr/another-users-export/auth/export.json")
+        # Straight to the DB: the ingest gate never saw this value.
+        req.parts.update(
+            status=DataExportPart.STATUS_DONE, bucket_path=foreign,
+        )
+
+        gdpr_orchestrator._download_bucket_parts(req, tmp_path)
+
+        assert not (tmp_path / "auth" / "export.json").exists()
+
+    def test_the_export_own_key_still_works(self, settings, user):
+        """The closed rule must not break the shape peers actually use."""
+        settings.GDPR_COLLECTING_SERVICES = ["auth"]
+        req = gdpr_orchestrator.request_export(user.pk)
+        key = self._staged(
+            req, f"gdpr/{req.correlation_id}/auth/export.json", b'{"mine": true}'
+        )
+
+        gdpr_orchestrator.mark_part_ready(req.correlation_id, "auth", key)
+
+        assert req.parts.get(service="auth").status == DataExportPart.STATUS_DONE
+
+    def test_the_prefix_rule_is_an_explicit_opt_out(self, settings, user):
+        """A deployment whose peers stage elsewhere says so — and even then
+        traversal and absolute keys stay refused."""
+        from tests.support import gdpr_conf
+
+        settings.GDPR_COLLECTING_SERVICES = ["auth"]
+        settings.STAPEL_GDPR = gdpr_conf(EXPORT_BUCKET_PREFIX="")
+        req = gdpr_orchestrator.request_export(user.pk)
+        elsewhere = self._staged(req, "exports/auth/somewhere-else.json")
+
+        gdpr_orchestrator.mark_part_ready(req.correlation_id, "auth", elsewhere)
+        assert req.parts.get(service="auth").status == DataExportPart.STATUS_DONE
+
+        req2 = DataExportRequest.objects.create(
+            user_id=user.pk, correlation_id="cid-2", status=DataExportRequest.STATUS_PROCESSING,
+        )
+        DataExportPart.objects.create(request=req2, service="auth")
+        gdpr_orchestrator.mark_part_ready("cid-2", "auth", "../../etc/passwd")
+        assert req2.parts.get(service="auth").status != DataExportPart.STATUS_DONE
+
+    def test_the_open_prefix_is_reported_by_manage_py_check(self, settings):
+        from tests.support import gdpr_conf
+
+        from stapel_gdpr.checks import check_data_owner_registry
+
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake"], EXPORT_BUCKET_PREFIX="",
+        )
+        assert any(p.id == "gdpr.W007" for p in check_data_owner_registry())
+
+        settings.STAPEL_GDPR = gdpr_conf(DATA_OWNERS=["fake"])
+        assert not any(p.id == "gdpr.W007" for p in check_data_owner_registry())

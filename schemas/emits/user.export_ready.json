@@ -1,13 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "user.export_ready",
-  "description": "Data export archive is ready for download.",
+  "description": "Data export archive is ready for download. `is_partial` says whether the archive is known to be incomplete and `missing_services` names the owners that did not contribute — a consumer that renders a download link MUST surface both, or the user reads a partial answer as the whole of their data.",
   "type": "object",
   "required": ["user_id", "request_id", "download_expires_at"],
   "properties": {
     "user_id":             { "type": "string", "format": "uuid" },
     "request_id":          { "type": "integer" },
-    "download_expires_at": { "type": "string", "format": "date-time" }
+    "download_expires_at": { "type": "string", "format": "date-time" },
+    "is_partial":          { "type": "boolean" },
+    "missing_services":    { "type": "array", "items": { "type": "string" } }
   },
   "additionalProperties": false
 }

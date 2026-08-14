@@ -48,6 +48,9 @@ def pytest_configure(config):
             ],
             SERVICE_API_KEY="test-service-key",
             FRONTEND_URL="https://app.example.com",
+            # A deployment that wired the seams the library fails closed on;
+            # tests that want the unwired behavior override this explicitly.
+            STAPEL_GDPR={"SESSION_REVOKER": "tests.support.record_revocation"},
             # Skip migrations — create tables directly from models
             MIGRATION_MODULES={
                 "users": None,
@@ -101,9 +104,20 @@ def authed_client(api_client, user):
 
 
 @pytest.fixture
-def fake_provider():
-    """Register an in-process GDPR provider for the duration of a test."""
+def fake_provider(settings):
+    """Register an in-process GDPR provider for the duration of a test.
+
+    Declares it as a data owner too: a provider the registry does not know
+    about now blocks erasure completeness on purpose, and a fixture that
+    skipped the declaration would be testing a misconfigured deployment.
+    """
     from stapel_core.gdpr import GDPRProvider, gdpr_registry
+
+    from tests.support import gdpr_conf
+
+    settings.STAPEL_GDPR = gdpr_conf(
+        DATA_OWNERS=["fake"], DATA_OWNERS_VERSION="test-registry-1",
+    )
 
     class FakeProvider(GDPRProvider):
         section = "fake"

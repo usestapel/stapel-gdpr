@@ -24,6 +24,7 @@ from stapel_core.gdpr import (
     gdpr_registry,
 )
 
+from . import lifecycle
 from .conf import gdpr_settings
 from .models import (
     AccountClosureRequest,
@@ -32,11 +33,64 @@ from .models import (
     DataExportRequest,
     LegalHold,
 )
+from .owners import data_owner_report
 
 logger = logging.getLogger(__name__)
 
 # Framework users have UUID primary keys; str is accepted for convenience.
 UserId = Union[uuid_lib.UUID, str]
+
+
+#: Shape a remote-supplied ``bucket_path`` must have before this service will
+#: open it (security audit 2026-08-11).
+#:
+#: The value arrives from a peer service — over HTTP (ExportPartReadyView) or
+#: over the bus (consume_gdpr_completions) — and its contents are copied
+#: verbatim into an archive a USER downloads. Nothing validated it, so a
+#: compromised or merely buggy peer could name any key in the bucket and have
+#: this service hand it to whoever requested the export. Django's
+#: FileSystemStorage refuses traversal; an S3 backend has no such notion —
+#: keys are opaque strings and "../" is just characters.
+#:
+#: Two rules, both applied at ingest (mark_part_ready) AND at open
+#: (_download_bucket_parts), because rows written before this rule or by a
+#: writer that bypassed the orchestrator must not be readable either.
+BUCKET_PATH_PREFIX_TEMPLATE = "gdpr/{correlation_id}/"
+
+#: Segments that are never a legitimate part of an export key: traversal,
+#: absolutes, Windows separators/drives, and anything URL-shaped.
+_BUCKET_PATH_REJECTED = ("..", "\\", "://", "\x00")
+
+
+def export_bucket_prefix(correlation_id: str) -> str:
+    """The prefix a part's ``bucket_path`` must start with, or "" if opted out.
+
+    ``STAPEL_GDPR["EXPORT_BUCKET_PREFIX"]`` is a template over the request's
+    own correlation id, so a peer can only ever name a key belonging to the
+    export it was asked about — the property that stops one user's archive
+    from absorbing another's. Set it to "" to accept any key (see MODULE.md;
+    reported by ``manage.py check`` as gdpr.W007).
+    """
+    template = gdpr_settings.EXPORT_BUCKET_PREFIX
+    if not template:
+        return ""
+    return str(template).format(correlation_id=correlation_id)
+
+
+def is_safe_bucket_path(bucket_path: str, correlation_id: str) -> bool:
+    """Whether *bucket_path* may be opened for the export *correlation_id*."""
+    if not bucket_path or not isinstance(bucket_path, str):
+        return False
+    if bucket_path.startswith("/") or bucket_path.startswith("~"):
+        return False
+    if any(token in bucket_path for token in _BUCKET_PATH_REJECTED):
+        return False
+    if any(ch in bucket_path for ch in ("\r", "\n")):
+        return False
+    prefix = export_bucket_prefix(correlation_id)
+    # The shape rules above hold even when a host opted out of the prefix:
+    # traversal and absolute keys are never a legitimate export part.
+    return not prefix or bucket_path.startswith(prefix)
 
 
 def _secure_mkdir(path: Path) -> Path:
@@ -47,13 +101,17 @@ def _secure_mkdir(path: Path) -> Path:
 
 
 def _collecting_services() -> list[str]:
-    """Return the list of services expected to contribute GDPR data.
+    """Services expected to contribute to an export.
 
-    Monolith: derives from in-process registry.
-    Microservices: explicitly configured via GDPR_COLLECTING_SERVICES setting.
+    Every declared data owner, plus whatever a host listed the old way
+    (GDPR_COLLECTING_SERVICES) and whatever is registered in-process — the
+    union, because an owner that is not asked cannot be reported missing.
     """
-    from_settings = getattr(settings, 'GDPR_COLLECTING_SERVICES', [])
-    return from_settings or gdpr_registry.sections
+    expected = list(data_owner_report().names)
+    for name in list(getattr(settings, 'GDPR_COLLECTING_SERVICES', []) or []) + gdpr_registry.sections:
+        if name not in expected:
+            expected.append(name)
+    return expected
 
 
 class GDPROrchestrator:
@@ -158,6 +216,17 @@ class GDPROrchestrator:
                            correlation_id, service)
             return
 
+        if bucket_path and not is_safe_bucket_path(bucket_path, req.correlation_id):
+            # Refuse the part rather than store a key we will not open later:
+            # the export then reports this service as missing (an honestly
+            # partial archive) instead of carrying somebody else's object.
+            logger.error(
+                'GDPR part refused: bucket_path outside %r [correlation=%s service=%s path=%s]',
+                export_bucket_prefix(req.correlation_id) or '<shape rules only>',
+                correlation_id, service, bucket_path,
+            )
+            return
+
         updated = DataExportPart.objects.filter(
             request=req, service=service,
         ).exclude(status=DataExportPart.STATUS_DONE).update(
@@ -215,6 +284,14 @@ class GDPROrchestrator:
     def _assemble_zip(self, req: DataExportRequest, staging_dir: Path, partial: bool = False) -> None:
         self._download_bucket_parts(req, staging_dir)
 
+        # Completeness is judged against the declared registry, not against
+        # whatever happened to answer: an owner nobody declared cannot be
+        # reported missing, so an unconfigured registry makes every export
+        # partial by construction.
+        registry = data_owner_report()
+        missing = self._missing_services(req, registry)
+        partial = partial or bool(missing) or bool(registry.problems)
+
         archive_root = _secure_mkdir(self._archive_root())
         zip_path = archive_root / f'export_{req.pk}.zip'
 
@@ -222,7 +299,7 @@ class GDPROrchestrator:
         zip_root = f'export_{date_str}'
 
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f'{zip_root}/README.txt', self._build_readme(req, partial))
+            zf.writestr(f'{zip_root}/README.txt', self._build_readme(req, partial, missing))
             if staging_dir.exists():
                 for file in staging_dir.rglob('*'):
                     if file.is_file():
@@ -236,17 +313,23 @@ class GDPROrchestrator:
         # never told about must not silently exist (same discipline as
         # ``initiate_closure``). The email in ``_send_ready_notification``
         # below stays best-effort; the *event* is the contract.
-        req.archive_path = str(zip_path)
-        req.status       = DataExportRequest.STATUS_READY
+        req.archive_path     = str(zip_path)
+        req.status           = DataExportRequest.STATUS_READY
+        req.is_partial       = partial
+        req.missing_services = missing
         with mutate_and_emit() as emit:
-            req.save(update_fields=['archive_path', 'status'])
-            req.generate_download_token()
+            req.save(update_fields=[
+                'archive_path', 'status', 'is_partial', 'missing_services',
+            ])
+            token = req.generate_download_token()
             emit(
                 'user.export_ready',
                 {
                     'user_id': str(req.user_id),
                     'request_id': req.pk,
                     'download_expires_at': req.download_expires_at.isoformat(),
+                    'is_partial': partial,
+                    'missing_services': missing,
                 },
                 key=str(req.user_id),
             )
@@ -255,8 +338,19 @@ class GDPROrchestrator:
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
 
-        self._send_ready_notification(req)
-        logger.info('GDPR export archive assembled [request=%s partial=%s]', req.pk, partial)
+        self._send_ready_notification(req, token)
+        logger.info('GDPR export archive assembled [request=%s partial=%s missing=%s]',
+                    req.pk, partial, missing)
+
+    def _missing_services(self, req: DataExportRequest, registry) -> list[str]:
+        """Expected sections with nothing in the archive, declared owners first."""
+        delivered = set(
+            req.parts.filter(status=DataExportPart.STATUS_DONE).values_list('service', flat=True)
+        )
+        expected = list(registry.names) + [
+            s for s in (req.expected_services or []) if s not in registry.names
+        ]
+        return [s for s in expected if s not in delivered]
 
     def _download_bucket_parts(self, req: DataExportRequest, staging_dir: Path) -> None:
         """Download parts uploaded to object storage into the local staging directory."""
@@ -268,6 +362,16 @@ class GDPROrchestrator:
             dest_file = dest_dir / 'export.json'
             if dest_file.exists():
                 continue
+            # Checked again here, not only at ingest: this row may predate the
+            # rule or have been written by something other than the
+            # orchestrator, and the bytes go straight into a user's download.
+            if not is_safe_bucket_path(part.bucket_path, req.correlation_id):
+                logger.error(
+                    'GDPR part not downloaded: bucket_path fails the export key '
+                    'contract [request=%s service=%s path=%s]',
+                    req.pk, part.service, part.bucket_path,
+                )
+                continue
             try:
                 with default_storage.open(part.bucket_path) as src:
                     dest_file.write_bytes(src.read())
@@ -275,7 +379,7 @@ class GDPROrchestrator:
                 logger.error('Failed to download GDPR part from bucket [service=%s path=%s]: %s',
                              part.service, part.bucket_path, e)
 
-    def _send_ready_notification(self, req: DataExportRequest) -> None:
+    def _send_ready_notification(self, req: DataExportRequest, token: str) -> None:
         try:
             from django.contrib.auth import get_user_model
             from stapel_core.notifications import request_notification
@@ -285,28 +389,40 @@ class GDPROrchestrator:
                     email=user.email,
                     notification_type='gdpr.export_ready',
                     variables={
-                        'download_url': self._build_download_url(req),
+                        'download_url': self._build_download_url(token),
                         'expires_at': req.download_expires_at.isoformat() if req.download_expires_at else '',
+                        'is_partial': req.is_partial,
+                        'missing_services': req.missing_services,
                     },
                 )
         except Exception as e:
             logger.error('Failed to send GDPR ready notification [request=%s]: %s', req.pk, e)
 
-    def _build_download_url(self, req: DataExportRequest) -> str:
-        frontend_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/')
-        return f'{frontend_url}/privacy/export/{req.download_token}/'
+    def _build_download_url(self, token: str) -> str:
+        """Where the user goes to spend the token.
 
-    def _build_readme(self, req: DataExportRequest, partial: bool) -> str:
+        The default template parks the token in the URL *fragment*: browsers
+        never send a fragment to a server, so it stays out of access logs,
+        Referer headers and proxy traces — the leak paths the query-string
+        form had.
+        """
+        frontend_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/')
+        template = gdpr_settings.DOWNLOAD_URL_TEMPLATE
+        return template.format(frontend_url=frontend_url, token=token)
+
+    def _build_readme(self, req: DataExportRequest, partial: bool, missing: list[str] | None = None) -> str:
         lines = [
             'Your personal data export',
             f'Requested: {req.created_at.strftime("%Y-%m-%d %H:%M UTC")}',
             '',
         ]
         if partial:
-            missing = [p.service for p in req.parts.exclude(status=DataExportPart.STATUS_DONE)]
+            if missing is None:
+                missing = [p.service for p in req.parts.exclude(status=DataExportPart.STATUS_DONE)]
             lines += [
-                'NOTE: This is a partial export. The following sections could not be',
-                'included within the 24-hour processing window:',
+                'NOTE: This is a PARTIAL export. The following sections could not be',
+                'included within the processing window, or hold data this deployment',
+                'cannot currently account for:',
                 *[f'  - {s}' for s in missing],
                 'Please contact privacy@yourdomain.com to request the missing data.',
                 '',
@@ -335,15 +451,25 @@ class GDPROrchestrator:
     # -------------------------------------------------------------------------
 
     def initiate_closure(self, user_id: UserId, trigger: str = AccountClosureRequest.TRIGGER_MANUAL) -> AccountClosureRequest:
-        """Create the closure request, deactivate the user, and announce it.
+        """Create the closure request, deactivate the user, revoke sessions, announce.
 
-        The row + deactivation + ``user.deletion_initiated`` emit are one
-        outbox unit via ``mutate_and_emit()``: a failing emit rolls the
-        mutation back and propagates (never swallowed) — a closure request
-        that consumers were never told about (e.g. stapel-notifications
-        deactivating contacts) must not silently exist. Callers that need
-        best-effort semantics already wrap this call (``tasks.py``'s
-        ``check_inactive_accounts``); the HTTP view surfaces it as a 500.
+        The row + deactivation + session revocation + ``user.deletion_initiated``
+        emit are one outbox unit via ``mutate_and_emit()``: a failing emit
+        rolls the mutation back and propagates (never swallowed) — a closure
+        request that consumers were never told about (e.g.
+        stapel-notifications deactivating contacts) must not silently exist.
+        Callers that need best-effort semantics already wrap this call
+        (``tasks.py``'s ``check_inactive_accounts``); the HTTP view surfaces
+        it as a 500.
+
+        Deactivation goes through :func:`stapel_gdpr.lifecycle.set_active`,
+        never ``QuerySet.update``: the update path issues raw SQL, so the
+        host's activation observers never fire and the closure propagates
+        nowhere. Revocation raises
+        :class:`~stapel_gdpr.errors.SessionRevocationUnavailable` when no
+        seam resolves, which aborts the whole transaction — a closure that
+        leaves every pre-closure access token alive is the defect this
+        refuses to record.
         """
         if LegalHold.is_held(user_id):
             raise ValueError('legal_hold')
@@ -355,8 +481,13 @@ class GDPROrchestrator:
         from stapel_core.comm import mutate_and_emit
 
         with mutate_and_emit() as emit:
-            closure = AccountClosureRequest.objects.create(user_id=user_id, trigger=trigger)
-            self._deactivate_user(user_id)
+            closure = AccountClosureRequest.objects.create(
+                user_id=user_id,
+                trigger=trigger,
+                registry_version=data_owner_report().version,
+            )
+            lifecycle.set_active(user_id, False, reason='gdpr_closure')
+            lifecycle.revoke_sessions(user_id, emit=emit)
             emit(
                 'user.deletion_initiated',
                 {
@@ -375,10 +506,13 @@ class GDPROrchestrator:
         if not closure:
             raise ValueError('no_active_closure')
 
-        closure.status       = AccountClosureRequest.STATUS_CANCELLED
-        closure.cancelled_at = timezone.now()
-        closure.save(update_fields=['status', 'cancelled_at'])
-        self._reactivate_user(user_id)
+        with transaction.atomic():
+            closure.status       = AccountClosureRequest.STATUS_CANCELLED
+            closure.cancelled_at = timezone.now()
+            closure.save(update_fields=['status', 'cancelled_at'])
+            # Same seam as the deactivation, so ``user.reactivated`` fires and
+            # consumers that suspended memberships lift them again.
+            lifecycle.set_active(user_id, True)
         return closure
 
     def execute_deletion(self, closure: AccountClosureRequest) -> None:
@@ -391,11 +525,14 @@ class GDPROrchestrator:
         DELETED only when every local provider actually succeeded — a
         swallowed provider crash must not be recorded as a completed erasure.
 
-        Remote services (STAPEL_GDPR["REMOTE_DELETION_SERVICES"]) each get an
-        AccountDeletionPart and must confirm with a ``gdpr.section.erased``
-        action carrying this closure's correlation_id. The closure flips to
-        DELETED only when local providers succeeded AND all expected remote
-        parts are done (immediately, when the list is empty).
+        Every declared data owner (STAPEL_GDPR["DATA_OWNERS"], plus the legacy
+        REMOTE_DELETION_SERVICES) gets an AccountDeletionPart and must produce
+        a durable receipt: local owners when their provider returns, remote
+        owners by confirming with a ``gdpr.section.erased`` action carrying
+        this closure's correlation_id. The closure flips to DELETED only when
+        the registry itself is trustworthy AND every part carries a receipt
+        AND the primary user row itself was erased — never "immediately,
+        because nothing was configured".
 
         ``local_erasure_done`` and the ``user.deleted`` emit are one outbox
         unit via ``mutate_and_emit()``: a failing emit rolls the flag back
@@ -409,23 +546,27 @@ class GDPROrchestrator:
         if LegalHold.is_held(closure.user_id):
             raise ValueError('legal_hold')
 
+        registry = data_owner_report()
+
         closure.status = AccountClosureRequest.STATUS_DELETING
         if not closure.correlation_id:
             closure.correlation_id = str(uuid_lib.uuid4())
-        closure.save(update_fields=['status', 'correlation_id'])
+        closure.registry_version = registry.version
+        closure.save(update_fields=['status', 'correlation_id', 'registry_version'])
 
         user_id        = closure.user_id
         correlation_id = closure.correlation_id
 
-        # Expected remote confirmations — one part per configured service.
-        for service in gdpr_settings.REMOTE_DELETION_SERVICES:
-            AccountDeletionPart.objects.get_or_create(closure=closure, service=service)
+        # One receipt slot per declared owner — the ledger the DELETED flip
+        # is checked against.
+        self._ensure_deletion_parts(closure, registry)
 
         # Re-registration hashes must be captured BEFORE erasure destroys
         # the identifiers.
         self._store_reregistration_hashes(user_id)
 
         failed = self._run_deletion_inprocess(user_id)
+        self._record_local_receipts(closure, registry, failed)
 
         if failed:
             logger.error(
@@ -433,6 +574,22 @@ class GDPROrchestrator:
                 user_id, failed,
             )
             return
+
+        # The primary user row is erased last among the local work: the
+        # providers above look the user up by email/phone to find their own
+        # rows, and re-registration hashes were already taken. It is erased
+        # here rather than at finalization so a remote owner's silence can
+        # never leave the person on file indefinitely.
+        try:
+            lifecycle.erase_identity(user_id)
+        except Exception as e:
+            logger.error(
+                'GDPR primary identity erasure failed [user=%s]: %s — left in '
+                'DELETING for retry', user_id, e,
+            )
+            return
+        closure.identity_erased_at = timezone.now()
+        closure.save(update_fields=['identity_erased_at'])
 
         from stapel_core.comm import mutate_and_emit
 
@@ -451,8 +608,12 @@ class GDPROrchestrator:
 
         self._maybe_finalize(closure)
 
-    def mark_section_erased(self, correlation_id: str, service: str) -> None:
-        """Called when a remote service confirms erasure via gdpr.section.erased."""
+    def mark_section_erased(self, correlation_id: str, service: str, receipt_id: str = '') -> None:
+        """Called when a remote service confirms erasure via gdpr.section.erased.
+
+        An unknown service is NOT accepted as a receipt: a confirmation from
+        a name nobody declared proves nothing about the owners that were.
+        """
         closure = AccountClosureRequest.objects.filter(correlation_id=correlation_id).first()
         if closure is None:
             logger.warning('gdpr.section.erased for unknown correlation_id=%s service=%s',
@@ -463,6 +624,7 @@ class GDPROrchestrator:
             closure=closure, service=service,
         ).exclude(status=AccountDeletionPart.STATUS_DONE).update(
             status=AccountDeletionPart.STATUS_DONE,
+            receipt_id=receipt_id or f'{service}:{correlation_id}',
             completed_at=timezone.now(),
         )
         if not updated:
@@ -473,17 +635,88 @@ class GDPROrchestrator:
         closure.refresh_from_db()
         self._maybe_finalize(closure)
 
+    def _ensure_deletion_parts(self, closure: AccountClosureRequest, registry) -> None:
+        """One receipt slot per declared owner, with its own timeout clock."""
+        now = timezone.now()
+        for owner in registry.owners:
+            AccountDeletionPart.objects.get_or_create(
+                closure=closure,
+                service=owner.name,
+                defaults={
+                    'kind': (AccountDeletionPart.KIND_LOCAL if owner.is_local
+                             else AccountDeletionPart.KIND_REMOTE),
+                    'deadline': now + owner.timeout,
+                },
+            )
+
+    def _record_local_receipts(self, closure: AccountClosureRequest, registry,
+                               failed: list[str]) -> None:
+        """Write a receipt for every local owner whose provider actually ran.
+
+        An owner declared local but never registered has no provider to run,
+        so it gets no receipt — silence must not be mistaken for success.
+        """
+        for owner in registry.owners:
+            if not owner.is_local or owner.name in failed or owner.name in registry.missing:
+                continue
+            part = closure.parts.filter(service=owner.name).first()
+            if part and part.status != AccountDeletionPart.STATUS_DONE:
+                part.record_receipt()
+
     def _maybe_finalize(self, closure: AccountClosureRequest) -> None:
-        """Flip the closure to DELETED once local + all remote erasure is confirmed."""
+        """Flip the closure to DELETED only against a full set of receipts.
+
+        Fails CLOSED, and that is the point: the previous version finalized
+        as soon as the local providers returned and the (empty)
+        REMOTE_DELETION_SERVICES list was vacuously satisfied, so a
+        deployment with one registered provider marked accounts DELETED
+        while every other store kept the data. Now the closure stays in
+        DELETING — visible, retryable, and honest — until every declared
+        owner produced a receipt against a registry that is itself sound.
+        The named override is ``ALLOW_ERASURE_WITHOUT_RECEIPTS``.
+        """
         if closure.status != AccountClosureRequest.STATUS_DELETING:
             return
-        if not closure.local_erasure_done or not closure.all_remote_parts_done:
+        if not closure.local_erasure_done:
             return
-        closure.status     = AccountClosureRequest.STATUS_DELETED
-        closure.deleted_at = timezone.now()
-        closure.save(update_fields=['status', 'deleted_at'])
-        logger.info('GDPR account deletion completed [user=%s correlation=%s]',
-                    closure.user_id, closure.correlation_id)
+        if not closure.identity_erased_at:
+            # Not waivable by ALLOW_ERASURE_WITHOUT_RECEIPTS: that hatch is
+            # about owners this deployment cannot reach, whereas the primary
+            # user row is always reachable — a surviving one means the
+            # erasure did not run, not that it could not.
+            logger.warning(
+                'GDPR closure has no erased primary identity, staying DELETING '
+                '[user=%s correlation=%s]', closure.user_id, closure.correlation_id,
+            )
+            return
+
+        blockers = list(data_owner_report().problems)
+        unreceipted = closure.unreceipted_owners
+        if unreceipted:
+            blockers.append(f'owners without a deletion receipt: {", ".join(unreceipted)}')
+
+        waived = False
+        if blockers:
+            if not gdpr_settings.ALLOW_ERASURE_WITHOUT_RECEIPTS:
+                logger.warning(
+                    'GDPR erasure not certifiable, closure stays DELETING '
+                    '[user=%s correlation=%s]: %s',
+                    closure.user_id, closure.correlation_id, '; '.join(blockers),
+                )
+                return
+            waived = True
+            logger.error(
+                'GDPR closure marked DELETED without full receipts '
+                '(ALLOW_ERASURE_WITHOUT_RECEIPTS is on) [user=%s correlation=%s]: %s',
+                closure.user_id, closure.correlation_id, '; '.join(blockers),
+            )
+
+        closure.status              = AccountClosureRequest.STATUS_DELETED
+        closure.deleted_at          = timezone.now()
+        closure.completeness_waived = waived
+        closure.save(update_fields=['status', 'deleted_at', 'completeness_waived'])
+        logger.info('GDPR account deletion completed [user=%s correlation=%s registry=%s waived=%s]',
+                    closure.user_id, closure.correlation_id, closure.registry_version, waived)
 
     def _store_reregistration_hashes(self, user_id: UserId) -> None:
         """Persist salted hashes of the user's identifiers before erasure."""
@@ -540,19 +773,25 @@ class GDPROrchestrator:
                     failed.append(provider.section)
         return failed
 
-    def _deactivate_user(self, user_id: UserId) -> None:
-        try:
-            from django.contrib.auth import get_user_model
-            get_user_model().objects.filter(pk=user_id).update(is_active=False)
-        except Exception as e:
-            logger.error('Failed to deactivate user %s: %s', user_id, e)
+    def sweep_deletion_deadlines(self) -> int:
+        """Mark overdue deletion parts TIMED OUT. Returns how many.
 
-    def _reactivate_user(self, user_id: UserId) -> None:
-        try:
-            from django.contrib.auth import get_user_model
-            get_user_model().objects.filter(pk=user_id).update(is_active=True)
-        except Exception as e:
-            logger.error('Failed to reactivate user %s: %s', user_id, e)
+        A silent owner is not a finished owner: the part flips to TIMEOUT,
+        which keeps blocking DELETED and puts the name in the logs instead of
+        letting the closure quietly complete around it.
+        """
+        overdue = AccountDeletionPart.objects.filter(
+            status=AccountDeletionPart.STATUS_PENDING,
+            deadline__lte=timezone.now(),
+        )
+        names = list(overdue.values_list('closure_id', 'service'))
+        count = overdue.update(
+            status=AccountDeletionPart.STATUS_TIMEOUT,
+            error='owner did not confirm erasure before its deadline',
+        )
+        for closure_id, service in names:
+            logger.error('GDPR deletion part timed out [closure=%s owner=%s]', closure_id, service)
+        return count
 
 
 gdpr_orchestrator = GDPROrchestrator()

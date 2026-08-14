@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -25,8 +25,10 @@ class ExportStatusDTO:
         status: One of pending, processing, ready, failed, expired. Example: ready
         parts_done: Number of sections completed. Example: 4
         parts_total: Total sections expected. Example: 5
-        download_available: Whether archive is ready to download. Example: true
+        download_available: Whether archive is ready to download (single-use token unspent). Example: true
         expires_at: ISO datetime when download link expires, null if not ready. Example: 2026-07-01T12:00:00Z
+        is_partial: Whether sections are missing from the archive. Example: false
+        missing_services: Sections that could not be included. Example: ["recordings"]
     """
     request_id: int
     status: str
@@ -34,6 +36,8 @@ class ExportStatusDTO:
     parts_total: int
     download_available: bool
     expires_at: Optional[str]
+    is_partial: bool = False
+    missing_services: list[str] = field(default_factory=list)
 
 
 @dataclass

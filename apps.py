@@ -10,6 +10,10 @@ class StapelGDPRConfig(AppConfig):
     def ready(self):
         from . import actions  # noqa: F401  — register comm subscribers
         self._register_gdpr_providers()
+        # Providers first: the registry check compares the declaration
+        # against what actually got registered above.
+        from .checks import register_checks
+        register_checks()
 
     def _register_gdpr_providers(self):
         """Load and register GDPR providers declared in settings.
