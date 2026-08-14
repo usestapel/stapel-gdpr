@@ -5,6 +5,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-14
+
+### Changed — requires stapel-core >= 0.24.0
+
+The floor moved from `0.10` to `0.24.0`. This module imports no symbol that
+core added in the 2026-08-11 wave — the floor moves because a guarantee made
+here is only half-made without core's half of the same finding:
+
+- **GDPR-01 is a two-repo fix.** `get_or_create_user_from_jwt` wrote the
+  `is_active` claim into the local user row, so any token minted before a
+  closure undid that closure when it was replayed — core's own changelog
+  files that change under "a bearer token can no longer write account
+  lifecycle (audit GDPR-01, P0)". What lands here defends the *read* side
+  (`lifecycle.access_state` answers from the closure row, `guards` refuse a
+  deleting account whatever `is_active` says); core 0.24.0 is what stops the
+  *write*. On an older core the guards still hold, but the user row keeps
+  being flipped back underneath them, which is not the state this release
+  claims.
+- `JWT_CREATE_USERS_FROM_TOKEN` now defaults to `False`, so an unknown
+  `user_id` in a token no longer materialises the very row a closure just
+  erased.
+- `STAPEL_COMM["VALIDATE_SCHEMAS"]` is on by default instead of following
+  `settings.DEBUG`, so the payloads this module emits (`user.export_ready`,
+  the new `user.sessions_revoked`, `gdpr.section.erased`) are checked against
+  the schemas in `schemas/emits/` in production and not only in development.
+
+The suite passes against both cores — the difference the floor expresses is a
+deployment property, not a test failure, which is exactly why it is stated as
+a floor rather than left to a reader to discover.
+
 ### Security
 
 Closes the three GDPR findings of the 2026-08-11 audit.

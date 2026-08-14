@@ -24,7 +24,7 @@ pip install stapel-gdpr
 
 | Fact | Value |
 |---|---|
-| Version | `0.3.13` |
+| Version | `0.4.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 7 |
 | Config axes | 1 |
