@@ -7,6 +7,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.0] — 2026-08-14
 
+### Added — this module ships its own localized error catalogs
+
+`translations/errors.{ru,es}.json` plus the `translations/.state.json`
+provenance sidecar, generated and gated by `tests/test_error_i18n.py` through
+the `stapel_core.i18n` contour (regenerate with
+`STAPEL_REGEN_ERROR_I18N=1 pytest tests/test_error_i18n.py::test_regen`).
+
+Since stapel-core 0.22.0 a package may only translate the keys it **owns**, and
+since 0.23.1 a reader resolves a key it does not own from the **owner's**
+catalog. This module owns ten `error.*.gdpr.*` keys and shipped no catalog at
+all, so every consumer's localized error reference fell back to English for
+them — no consumer could fix that on its own side, because the writer that
+would have to place the text is scoped out of those keys. Concretely,
+stapel-auth's `docs/errors.{ru,es}.md` rendered `_(en)_` rows for the three
+keys the 2026-08-11 wave added (`error.403.gdpr.account_closed`,
+`error.410.gdpr.download_consumed`, `error.503.gdpr.closure_unavailable`), and
+the seven older ones only rendered in Russian because stapel-auth still carried
+a pre-ownership-scoping copy of them, deleted in its 0.21.0 line.
+
+All twenty values are seeded from stapel-translate's curated builtin corpus
+(`origin: seed:stapel-builtin`; 0.6.1 is the release that added the three
+missing strings), so the ten strings keep one home and nothing here is
+unreviewed LLM output. `translations/*.json` joins the wheel's package data —
+the catalog only resolves for a consumer if it is actually installed.
+
+No behavior change: no code, no schema, no migration.
+
 ### Changed — requires stapel-core >= 0.24.0
 
 The floor moved from `0.10` to `0.24.0`. This module imports no symbol that

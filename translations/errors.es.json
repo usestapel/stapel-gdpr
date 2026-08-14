@@ -1,0 +1,12 @@
+{
+  "error.403.gdpr.account_closed": "Esta cuenta se está eliminando y ya no se puede utilizar.",
+  "error.404.gdpr.export_not_found": "Solicitud de exportación no encontrada.",
+  "error.404.gdpr.no_active_closure": "No se encontró ningún cierre de cuenta pendiente.",
+  "error.409.gdpr.closure_already_pending": "El cierre de la cuenta ya está en curso.",
+  "error.409.gdpr.export_cooldown": "Ya se solicitó una exportación de datos en los últimos 30 días.",
+  "error.409.gdpr.legal_hold": "Los datos de la cuenta están sujetos a una retención legal y no se pueden eliminar.",
+  "error.410.gdpr.download_consumed": "El enlace de descarga ya se ha utilizado. Solicita una nueva exportación.",
+  "error.410.gdpr.download_expired": "El enlace de descarga ha caducado.",
+  "error.425.gdpr.export_not_ready": "La exportación todavía se está preparando.",
+  "error.503.gdpr.closure_unavailable": "El cierre de la cuenta no está disponible temporalmente. Inténtalo de nuevo más tarde."
+}
