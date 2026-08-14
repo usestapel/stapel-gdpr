@@ -40,6 +40,7 @@ Public API (`stapel_gdpr.__all__`, lazily imported): `LegalHold`, `gdpr_orchestr
 | `REREG_SALT` | `""` (falls back to `SECRET_KEY`) | Key for the purpose-bound re-registration HMAC. Set it once, before any hashes exist |
 | `STAGING_ROOT` | `""` (→ `MEDIA_ROOT/gdpr/staging`) | Filesystem root for per-request export staging dirs |
 | `ARCHIVE_ROOT` | `""` (→ `MEDIA_ROOT/gdpr/exports`) | Filesystem root for final export ZIP archives |
+| `EXPORT_BUCKET_PREFIX` | `"gdpr/{correlation_id}/"` | Prefix a peer service's `bucket_path` must start with before this service opens the object and copies its bytes into a user's download. Templated over the export's own correlation id, so a peer can only name a key belonging to the export it was asked about. `""` accepts any key (`gdpr.W007`); traversal, absolute and URL-shaped keys are refused either way. Checked at ingest (`mark_part_ready`) **and** at open (`_download_bucket_parts`), so a row written around the orchestrator is not readable either |
 | `ALLOW_ERASURE_WITHOUT_RECEIPTS` | `False` | Escape hatch: mark a closure `deleted` without a full set of receipts (recorded as `completeness_waived`, warned about by `gdpr.W003`) |
 | `ALLOW_CLOSURE_WITHOUT_SESSION_REVOCATION` | `False` | Escape hatch: close accounts with no revocation seam, leaving pre-closure access tokens valid until they expire |
 

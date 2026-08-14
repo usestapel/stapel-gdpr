@@ -41,6 +41,58 @@ logger = logging.getLogger(__name__)
 UserId = Union[uuid_lib.UUID, str]
 
 
+#: Shape a remote-supplied ``bucket_path`` must have before this service will
+#: open it (security audit 2026-08-11).
+#:
+#: The value arrives from a peer service — over HTTP (ExportPartReadyView) or
+#: over the bus (consume_gdpr_completions) — and its contents are copied
+#: verbatim into an archive a USER downloads. Nothing validated it, so a
+#: compromised or merely buggy peer could name any key in the bucket and have
+#: this service hand it to whoever requested the export. Django's
+#: FileSystemStorage refuses traversal; an S3 backend has no such notion —
+#: keys are opaque strings and "../" is just characters.
+#:
+#: Two rules, both applied at ingest (mark_part_ready) AND at open
+#: (_download_bucket_parts), because rows written before this rule or by a
+#: writer that bypassed the orchestrator must not be readable either.
+BUCKET_PATH_PREFIX_TEMPLATE = "gdpr/{correlation_id}/"
+
+#: Segments that are never a legitimate part of an export key: traversal,
+#: absolutes, Windows separators/drives, and anything URL-shaped.
+_BUCKET_PATH_REJECTED = ("..", "\\", "://", "\x00")
+
+
+def export_bucket_prefix(correlation_id: str) -> str:
+    """The prefix a part's ``bucket_path`` must start with, or "" if opted out.
+
+    ``STAPEL_GDPR["EXPORT_BUCKET_PREFIX"]`` is a template over the request's
+    own correlation id, so a peer can only ever name a key belonging to the
+    export it was asked about — the property that stops one user's archive
+    from absorbing another's. Set it to "" to accept any key (see MODULE.md;
+    reported by ``manage.py check`` as gdpr.W007).
+    """
+    template = gdpr_settings.EXPORT_BUCKET_PREFIX
+    if not template:
+        return ""
+    return str(template).format(correlation_id=correlation_id)
+
+
+def is_safe_bucket_path(bucket_path: str, correlation_id: str) -> bool:
+    """Whether *bucket_path* may be opened for the export *correlation_id*."""
+    if not bucket_path or not isinstance(bucket_path, str):
+        return False
+    if bucket_path.startswith("/") or bucket_path.startswith("~"):
+        return False
+    if any(token in bucket_path for token in _BUCKET_PATH_REJECTED):
+        return False
+    if any(ch in bucket_path for ch in ("\r", "\n")):
+        return False
+    prefix = export_bucket_prefix(correlation_id)
+    # The shape rules above hold even when a host opted out of the prefix:
+    # traversal and absolute keys are never a legitimate export part.
+    return not prefix or bucket_path.startswith(prefix)
+
+
 def _secure_mkdir(path: Path) -> Path:
     """mkdir -p with owner-only permissions (0700)."""
     path.mkdir(parents=True, exist_ok=True)
@@ -162,6 +214,17 @@ class GDPROrchestrator:
         except DataExportRequest.DoesNotExist:
             logger.warning('GDPR export completed for unknown correlation_id=%s service=%s',
                            correlation_id, service)
+            return
+
+        if bucket_path and not is_safe_bucket_path(bucket_path, req.correlation_id):
+            # Refuse the part rather than store a key we will not open later:
+            # the export then reports this service as missing (an honestly
+            # partial archive) instead of carrying somebody else's object.
+            logger.error(
+                'GDPR part refused: bucket_path outside %r [correlation=%s service=%s path=%s]',
+                export_bucket_prefix(req.correlation_id) or '<shape rules only>',
+                correlation_id, service, bucket_path,
+            )
             return
 
         updated = DataExportPart.objects.filter(
@@ -298,6 +361,16 @@ class GDPROrchestrator:
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_file = dest_dir / 'export.json'
             if dest_file.exists():
+                continue
+            # Checked again here, not only at ingest: this row may predate the
+            # rule or have been written by something other than the
+            # orchestrator, and the bytes go straight into a user's download.
+            if not is_safe_bucket_path(part.bucket_path, req.correlation_id):
+                logger.error(
+                    'GDPR part not downloaded: bucket_path fails the export key '
+                    'contract [request=%s service=%s path=%s]',
+                    req.pk, part.service, part.bucket_path,
+                )
                 continue
             try:
                 with default_storage.open(part.bucket_path) as src:

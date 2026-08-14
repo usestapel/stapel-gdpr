@@ -15,6 +15,8 @@ for that sentence to appear.
 * ``gdpr.W005`` — no session-revocation seam resolves, so closure will fail.
 * ``gdpr.E006`` — the primary-identity erasure strategy cannot run, so the
   users.User row would survive every erasure.
+* ``gdpr.W007`` — ``EXPORT_BUCKET_PREFIX`` is empty, so a peer service may
+  name any key in the bucket and have its bytes copied into a user's export.
 """
 from __future__ import annotations
 
@@ -105,6 +107,22 @@ def check_data_owner_registry(app_configs=None, **kwargs):
                     id="gdpr.W003",
                 )
             )
+
+    if not gdpr_settings.EXPORT_BUCKET_PREFIX:
+        problems.append(
+            CheckWarning(
+                'STAPEL_GDPR["EXPORT_BUCKET_PREFIX"] is empty: a peer service '
+                "may name any key in the storage bucket as its export part, "
+                "and those bytes are copied into an archive the requesting "
+                "user downloads.",
+                hint=(
+                    'Restore the default "gdpr/{correlation_id}/" so a peer '
+                    "can only name a key belonging to the export it was "
+                    "asked about."
+                ),
+                id="gdpr.W007",
+            )
+        )
 
     from .lifecycle import IDENTITY_ANONYMIZE, IDENTITY_DELETE, _resolve_revoker
 

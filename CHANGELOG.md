@@ -38,6 +38,26 @@ Closes the three GDPR findings of the 2026-08-11 audit.
   `store_hashes` never match, are reported by `gdpr.E004`, and are removable
   with `manage.py gdpr_purge_unverified_hashes`.
 
+- **A remote `bucket_path` is validated before it is opened (UPGRADE NOTE).**
+  A peer service's export part arrives as a storage key — over HTTP
+  (`ExportPartReadyView`) or over the bus — and whatever it names was copied
+  verbatim into an archive a USER downloads, with no shape check. Django's
+  `FileSystemStorage` refuses traversal; an S3 backend has no such notion, so
+  a compromised or merely buggy peer could pull an arbitrary key into another
+  user's export. The key must now start with
+  `STAPEL_GDPR["EXPORT_BUCKET_PREFIX"]`, which defaults to
+  `"gdpr/{correlation_id}/"` — templated over the export's own correlation
+  id, so a peer can only name a key belonging to the export it was asked
+  about. Traversal, absolute and URL-shaped keys are refused regardless.
+  Enforced at ingest (`mark_part_ready` refuses the part, and the export is
+  honestly reported partial) **and** at open (`_download_bucket_parts`), so a
+  row written before this rule or around the orchestrator is not readable
+  either.
+  *Upgrade:* peers that stage somewhere else must move to the prefix, or the
+  deployment must state where they stage.
+  *Opt-out restoring the old behaviour:*
+  `STAPEL_GDPR = {"EXPORT_BUCKET_PREFIX": ""}` — accepts any key, and says so
+  at `manage.py check` as `gdpr.W007`.
 - **The internal callback declares the permission it enforces.**
   `ExportPartReadyView` declared `IsAuthenticated` and checked
   `IsServiceRequest` inside `post()`. The in-body check did close the
@@ -50,10 +70,10 @@ Closes the three GDPR findings of the 2026-08-11 audit.
 
 ### Added
 
-- Boot-time system checks (`gdpr.E001/E002/W003/E004/W005/E006`): a missing or
+- Boot-time system checks (`gdpr.E001/E002/W003/E004/W005/E006/W007`): a missing or
   stale data-owner inventory, unverified hash rows, an unusable revocation or
-  identity-erasure seam, and every open escape hatch are reported by
-  `manage.py check`.
+  identity-erasure seam, an opened export-bucket prefix, and every open
+  escape hatch are reported by `manage.py check`.
 - `user.sessions_revoked` comm action; `receipt_id` on `gdpr.section.erased`.
 - Celery tasks `purge_expired_exports` and `sweep_deletion_deadlines`, both
   wired into `get_gdpr_beat_schedule()`.

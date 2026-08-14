@@ -51,6 +51,15 @@ Configure in Django settings::
         # Default: MEDIA_ROOT/gdpr/staging and MEDIA_ROOT/gdpr/exports.
         "STAGING_ROOT": "",
         "ARCHIVE_ROOT": "",
+        # Prefix a peer service's `bucket_path` must start with before this
+        # service will open it and copy the bytes into a user's download.
+        # Templated over the export's own correlation id, so a peer can only
+        # name a key belonging to the export it was asked about: an S3
+        # backend has no traversal notion, so without this a compromised or
+        # buggy peer names any key in the bucket and it lands in somebody's
+        # archive. "" accepts any key (reported as gdpr.W007); traversal,
+        # absolute and URL-shaped keys are refused either way.
+        "EXPORT_BUCKET_PREFIX": "gdpr/{correlation_id}/",
 
         # -- Re-registration hashes ----------------------------------------
         # Key for the purpose-bound HMAC (see reregistration.py).
@@ -81,6 +90,7 @@ gdpr_settings = AppSettings(
         "DOWNLOAD_URL_TEMPLATE": "{frontend_url}/privacy/export/#token={token}",
         "STAGING_ROOT": "",
         "ARCHIVE_ROOT": "",
+        "EXPORT_BUCKET_PREFIX": "gdpr/{correlation_id}/",
         "REREG_SALT": "",
         "ALLOW_ERASURE_WITHOUT_RECEIPTS": False,
         "ALLOW_CLOSURE_WITHOUT_SESSION_REVOCATION": False,
