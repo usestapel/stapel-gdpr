@@ -207,7 +207,9 @@ class TestReRegistrationHashScheme:
             user_id_was=str(user.pk),
             expires_at=timezone.now() + timedelta(days=30),
         )
-        assert [m.id for m in check_reregistration_hashes()] == ["gdpr.E004"]
+        assert [m.id for m in check_reregistration_hashes(databases=["default"])] == [
+            "gdpr.E004"
+        ]
 
     def test_purge_command_clears_them(self, user):
         import hashlib

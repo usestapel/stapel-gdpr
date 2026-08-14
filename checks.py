@@ -173,42 +173,65 @@ def check_data_owner_registry(app_configs=None, **kwargs):
     return problems
 
 
-def check_reregistration_hashes(app_configs=None, **kwargs):
-    """Report rows written outside ``store_hashes`` (unknown digest format)."""
-    from django.db import DatabaseError
+def check_reregistration_hashes(app_configs=None, databases=None, **kwargs):
+    """Report rows written outside ``store_hashes`` (unknown digest format).
+
+    Database-backed, so it obeys Django's contract for such checks
+    (``django.core.checks.database.check_database_backends`` is the canonical
+    example): *databases* names the aliases the caller opted into — ``migrate``
+    and ``manage.py check --database <alias>`` pass them, everything else
+    passes ``None``, which means "query nothing". A boot smoke test that runs
+    without a database is exactly that caller, and it must get an empty list,
+    not a traceback.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+    from django.db import DatabaseError, router
 
     from .models import ReRegistrationHash
 
-    try:
-        count = ReRegistrationHash.objects.exclude(
-            scheme__in=[
-                ReRegistrationHash.SCHEME_HMAC_V1,
-                # Pre-0003 rows are grandfathered: they age out with
-                # retention and cannot be attributed to a writer any more.
-                ReRegistrationHash.SCHEME_LEGACY,
-            ],
-        ).count()
-    except DatabaseError:
-        # Unmigrated or unreachable database: the deployment check is not the
-        # place to fail for that.
+    if not databases:
         return []
 
-    if not count:
-        return []
-    return [
-        Error(
-            f"{count} ReRegistrationHash rows were written outside "
-            "stapel_gdpr.reregistration.store_hashes and carry an unverified "
-            "digest format.",
-            hint=(
-                "An unsalted SHA-256 of a normalized email or phone number is "
-                "recoverable from a dictionary. Point every writer at "
-                "stapel_gdpr.reregistration.store_hashes and clear the old "
-                "rows with `manage.py gdpr_purge_unverified_hashes`."
-            ),
-            id="gdpr.E004",
+    problems = []
+    for alias in databases:
+        # The router decides where this model lives; an alias that does not
+        # hold it has nothing to say about it.
+        if not router.allow_migrate_model(alias, ReRegistrationHash):
+            continue
+        try:
+            count = ReRegistrationHash.objects.using(alias).exclude(
+                scheme__in=[
+                    ReRegistrationHash.SCHEME_HMAC_V1,
+                    # Pre-0003 rows are grandfathered: they age out with
+                    # retention and cannot be attributed to a writer any more.
+                    ReRegistrationHash.SCHEME_LEGACY,
+                ],
+            ).count()
+        except (DatabaseError, ImproperlyConfigured):
+            # Unmigrated, unreachable, or not configured at all (the dummy
+            # backend raises ImproperlyConfigured, not DatabaseError): a
+            # deployment check reports what it can see and stays silent about
+            # what it cannot reach. It is not the place to fail the boot for
+            # an absent database.
+            continue
+
+        if not count:
+            continue
+        problems.append(
+            Error(
+                f"{count} ReRegistrationHash rows in database {alias!r} were "
+                "written outside stapel_gdpr.reregistration.store_hashes and "
+                "carry an unverified digest format.",
+                hint=(
+                    "An unsalted SHA-256 of a normalized email or phone number "
+                    "is recoverable from a dictionary. Point every writer at "
+                    "stapel_gdpr.reregistration.store_hashes and clear the old "
+                    "rows with `manage.py gdpr_purge_unverified_hashes`."
+                ),
+                id="gdpr.E004",
+            )
         )
-    ]
+    return problems
 
 
 def register_checks() -> None:

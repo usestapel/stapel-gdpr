@@ -5,6 +5,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-08-15
+
+### Fixed — `check_reregistration_hashes` crashed a boot smoke test
+
+The check queried the database unconditionally and caught only
+`DatabaseError`. Django's dummy backend — what it fills in when `DATABASES`
+carries no ENGINE, i.e. exactly a boot smoke test run without a database —
+raises `ImproperlyConfigured`, which is not a `DatabaseError`, so
+`manage.py check` did not report a finding: it exited with a traceback out
+of `stapel_gdpr.checks`.
+
+Two changes, both of them Django's own convention for a database-backed
+check (`django.core.checks.database.check_database_backends` is the
+canonical shape):
+
+- the check now takes `databases=None` and returns `[]` without touching
+  the database when it is offered none. `migrate` and
+  `manage.py check --database <alias>` pass the aliases; everything else
+  passes `None`. **This changes when `gdpr.E004` is reported**: a plain
+  `manage.py check` no longer runs the query (the check has carried the
+  `database` tag since it was introduced, which is what that tag means).
+  Deploy pipelines that want it either pass `--database default` or get it
+  from `migrate`;
+- when a database *is* offered, it is queried per alias — routed with
+  `router.allow_migrate_model`, so an alias that does not hold the model is
+  skipped — and an unreachable or unconfigured one degrades to silence
+  instead of an exception. `ImproperlyConfigured` joins `DatabaseError` in
+  the handled set.
+
+`gdpr.E004` itself is unchanged, and still reports every
+`ReRegistrationHash` row written outside `store_hashes`; its message now
+names the alias it counted them in.
+
 ## [0.4.0] — 2026-08-14
 
 ### Added — this module ships its own localized error catalogs

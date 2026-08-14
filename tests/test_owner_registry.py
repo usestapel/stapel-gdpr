@@ -212,4 +212,97 @@ class TestBootChecks:
 
     def test_wired_deployment_is_clean(self, wired, fake_provider):
         assert check_data_owner_registry() == []
+        assert check_reregistration_hashes(databases=["default"]) == []
+
+
+@pytest.fixture
+def dummy_backend(monkeypatch):
+    """Every query behaves like Django's dummy backend: no database at all.
+
+    ``django.db.backends.dummy`` is what Django fills in when ``DATABASES``
+    has no ENGINE — the shape of a boot smoke test that runs without a
+    database — and every one of its API calls raises ``ImproperlyConfigured``
+    (``django/db/backends/dummy/base.py``), which is NOT a ``DatabaseError``.
+    Overriding ``DATABASES`` cannot express this in-process (Django lists it
+    in ``COMPLEX_OVERRIDE_SETTINGS``: the connection handler keeps the
+    connections it already built), so the refusal is injected where the
+    check meets the ORM.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+    from django.db.models.query import QuerySet
+
+    def complain(*args, **kwargs):
+        raise ImproperlyConfigured(
+            "settings.DATABASES is improperly configured. Please supply the "
+            "ENGINE value. Check settings documentation for more details."
+        )
+
+    monkeypatch.setattr(QuerySet, "count", complain)
+
+
+@pytest.fixture
+def query_is_forbidden(monkeypatch):
+    """Any query at all fails the test, with an error the check cannot catch.
+
+    ``dummy_backend`` alone cannot prove "no database was touched": the
+    widened ``except`` would swallow the evidence and the test would pass
+    on a check that queried anyway.
+    """
+    from django.db.models.query import QuerySet
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError(
+            "the check queried the database although it was offered none"
+        )
+
+    monkeypatch.setattr(QuerySet, "count", forbidden)
+
+
+class TestReregistrationCheckDatabaseContract:
+    """A check may only query the databases it was handed.
+
+    ``django.core.checks.registry.run_checks`` calls every check with
+    ``databases=`` — the aliases the caller opted into (``manage.py check
+    --database default``, or ``migrate``). ``None`` means "touch no
+    database", and that is exactly what a boot smoke test running without
+    one passes. ``django.core.checks.database.check_database_backends`` is
+    the canonical shape of the contract.
+
+    Before 0.4.1 this check queried unconditionally and caught only
+    ``DatabaseError``, so a deployment with no database did not get a
+    finding — it got an ``ImproperlyConfigured`` traceback out of
+    ``manage.py check``.
+    """
+
+    def test_no_databases_offered_means_no_query(self, query_is_forbidden):
         assert check_reregistration_hashes() == []
+
+    def test_the_registry_runs_it_without_a_database(self, query_is_forbidden):
+        """The path `manage.py check` takes: every check, ``databases=None``."""
+        from django.core.checks.registry import registry
+
+        findings = registry.run_checks(tags=["gdpr"], databases=None)
+        assert not [f for f in findings if f.id == "gdpr.E004"]
+
+    @pytest.mark.django_db
+    def test_the_registry_reports_findings_when_a_database_is_offered(self, user):
+        """``manage.py check --database default`` still sees the real rows."""
+        import hashlib
+
+        from django.core.checks.registry import registry
+
+        from stapel_gdpr.models import ReRegistrationHash
+
+        ReRegistrationHash.objects.create(
+            hash_type="email",
+            hash_value=hashlib.sha256(b"person@example.com").hexdigest(),
+            user_id_was=str(user.pk),
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        ids = [f.id for f in registry.run_checks(tags=["gdpr"], databases=["default"])]
+        assert "gdpr.E004" in ids
+
+    def test_an_unreachable_database_degrades_rather_than_explodes(
+        self, dummy_backend
+    ):
+        assert check_reregistration_hashes(databases=["default"]) == []
