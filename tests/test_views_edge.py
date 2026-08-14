@@ -202,6 +202,37 @@ class TestPartReadyBranches:
         )
         _assert_error_envelope(resp, 400, "error.400.bad_request")
 
+    def test_the_declared_permission_is_the_real_one(self):
+        """The declaration IS the enforcement (audit 2026-08-11).
+
+        This endpoint marks another service's export part complete. It used
+        to declare IsAuthenticated and check IsServiceRequest inside post(),
+        so every permission introspection — and any subclass overriding
+        post() — saw "any logged-in user" guarding it.
+        """
+        from stapel_core.django.api.permissions import IsServiceRequest
+
+        from stapel_gdpr import views
+
+        assert IsServiceRequest in views.ExportPartReadyView.permission_classes
+
+    def test_a_subclass_that_replaces_post_is_still_refused(self, user):
+        """The class-level declaration holds even without the in-body check."""
+        from rest_framework.response import Response
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        from stapel_gdpr import views
+
+        class Unguarded(views.ExportPartReadyView):
+            def post(self, request, request_id):  # no in-body IsServiceRequest
+                return Response(status=204)
+
+        request = APIRequestFactory().post("/part-ready", {}, format="json")
+        force_authenticate(request, user=user)  # a logged-in caller, no service key
+        resp = Unguarded.as_view()(request, request_id=1)
+
+        assert resp.status_code == 403
+
     def test_orchestrator_failure_500(self, authed_client, user, settings, monkeypatch):
         settings.GDPR_COLLECTING_SERVICES = ["auth"]
         req = gdpr_orchestrator.request_export(user.pk)

@@ -38,6 +38,16 @@ Closes the three GDPR findings of the 2026-08-11 audit.
   `store_hashes` never match, are reported by `gdpr.E004`, and are removable
   with `manage.py gdpr_purge_unverified_hashes`.
 
+- **The internal callback declares the permission it enforces.**
+  `ExportPartReadyView` declared `IsAuthenticated` and checked
+  `IsServiceRequest` inside `post()`. The in-body check did close the
+  endpoint, but the declaration is what a subclass overriding `post()`, and
+  every permission introspection or audit, actually sees — "any logged-in
+  user" on the endpoint that marks another service's GDPR export part
+  complete. `permission_classes` is now
+  `[IsServiceRequest, IsAuthenticated]`: the same requirement that was
+  already effective, stated where the rest of the module states it.
+
 ### Added
 
 - Boot-time system checks (`gdpr.E001/E002/W003/E004/W005/E006`): a missing or

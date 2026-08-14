@@ -18,6 +18,7 @@ from stapel_core.django.api.errors import (
     StapelResponse,
     error_500_internal,
 )
+from stapel_core.django.api.permissions import IsServiceRequest
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
 from .dto import ClosureStatusDTO, ExportRequestDTO, ExportStatusDTO
@@ -392,14 +393,19 @@ class ExportPartReadyView(GDPRAPIView):
     request_serializer_class = None
     response_serializer_class = None
 
-    permission_classes = [
-        permissions.IsAuthenticated
-    ]  # replaced by IsServiceRequest in production
+    # The declaration IS the enforcement (audit 2026-08-11). This used to say
+    # IsAuthenticated and check IsServiceRequest inside post(), which meant
+    # any subclass overriding post(), and every permission introspection or
+    # audit of this module, saw "any logged-in user" on the endpoint that
+    # marks another service's export part complete. DRF ANDs the list, so
+    # this states exactly what was already required: a service call, made by
+    # an authenticated caller.
+    permission_classes = [IsServiceRequest, permissions.IsAuthenticated]
 
     @extend_schema(exclude=True)
     def post(self, request: Request, request_id: int):  # noqa: R007
-        from stapel_core.django.api.permissions import IsServiceRequest
-
+        # Belt and braces: a subclass that swaps permission_classes for a
+        # looser list still cannot mark somebody else's part complete.
         if not IsServiceRequest().has_permission(request, self):
             return StapelErrorResponse(403, ERR_403_FORBIDDEN)
 
