@@ -30,6 +30,7 @@ pip install stapel-gdpr
 | Config axes | 1 |
 | Usage surface | 14 |
 | Extension points | 3 |
+| Error codes | 51 |
 | Fleet dependencies | [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation

@@ -1,0 +1,387 @@
+[
+  {
+    "code": "error.400.bad_request",
+    "status": 400,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Bad request"
+  },
+  {
+    "code": "error.400.captcha_invalid",
+    "status": 400,
+    "params": [],
+    "remediation": "retry",
+    "en": "Captcha verification failed. Please try again."
+  },
+  {
+    "code": "error.400.captcha_required",
+    "status": 400,
+    "params": [],
+    "remediation": "retry",
+    "en": "Captcha token is required."
+  },
+  {
+    "code": "error.400.expected_list",
+    "status": 400,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Expected a list of items"
+  },
+  {
+    "code": "error.400.field.blank",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} may not be blank"
+  },
+  {
+    "code": "error.400.field.does_not_exist",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} does not exist"
+  },
+  {
+    "code": "error.400.field.invalid",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} is invalid"
+  },
+  {
+    "code": "error.400.field.invalid_choice",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} is not a valid choice"
+  },
+  {
+    "code": "error.400.field.max_length",
+    "status": 400,
+    "params": [
+      "field",
+      "max_length"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} must be at most {max_length} characters"
+  },
+  {
+    "code": "error.400.field.max_value",
+    "status": 400,
+    "params": [
+      "field",
+      "max_value"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} must be at most {max_value}"
+  },
+  {
+    "code": "error.400.field.min_length",
+    "status": 400,
+    "params": [
+      "field",
+      "min_length"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} must be at least {min_length} characters"
+  },
+  {
+    "code": "error.400.field.min_value",
+    "status": 400,
+    "params": [
+      "field",
+      "min_value"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} must be at least {min_value}"
+  },
+  {
+    "code": "error.400.field.null",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} may not be null"
+  },
+  {
+    "code": "error.400.field.required",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} is required"
+  },
+  {
+    "code": "error.400.field.unique",
+    "status": 400,
+    "params": [
+      "field"
+    ],
+    "remediation": "fix_input",
+    "en": "{field} must be unique"
+  },
+  {
+    "code": "error.400.invalid_ad_id",
+    "status": 400,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Invalid advertisement ID"
+  },
+  {
+    "code": "error.400.validation_error",
+    "status": 400,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Validation error"
+  },
+  {
+    "code": "error.400.verification_failed",
+    "status": 400,
+    "params": [],
+    "remediation": "verify",
+    "en": "Verification failed"
+  },
+  {
+    "code": "error.400.verification_invalid_factor",
+    "status": 400,
+    "params": [],
+    "remediation": "verify",
+    "en": "This verification factor is not available"
+  },
+  {
+    "code": "error.401.unauthorized",
+    "status": 401,
+    "params": [],
+    "remediation": "reauthenticate",
+    "en": "Authentication required"
+  },
+  {
+    "code": "error.402.payment_required",
+    "status": 402,
+    "params": [],
+    "remediation": "retry",
+    "en": "Payment required"
+  },
+  {
+    "code": "error.403.forbidden",
+    "status": 403,
+    "params": [],
+    "remediation": "retry",
+    "en": "You do not have permission to perform this action"
+  },
+  {
+    "code": "error.403.gdpr.account_closed",
+    "status": 403,
+    "params": [],
+    "remediation": "retry",
+    "en": "This account is being erased and can no longer be used."
+  },
+  {
+    "code": "error.403.network_blocked",
+    "status": 403,
+    "params": [],
+    "remediation": "contact_support",
+    "en": "Requests from this network are not allowed"
+  },
+  {
+    "code": "error.403.verification_enrollment_required",
+    "status": 403,
+    "params": [],
+    "remediation": "verify",
+    "en": "Verification factor enrollment required"
+  },
+  {
+    "code": "error.403.verification_required",
+    "status": 403,
+    "params": [],
+    "remediation": "verify",
+    "en": "Additional verification required"
+  },
+  {
+    "code": "error.404.ad_not_found",
+    "status": 404,
+    "params": [],
+    "remediation": "retry",
+    "en": "Listing not found"
+  },
+  {
+    "code": "error.404.gdpr.export_not_found",
+    "status": 404,
+    "params": [],
+    "remediation": "retry",
+    "en": "Export request not found."
+  },
+  {
+    "code": "error.404.gdpr.no_active_closure",
+    "status": 404,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "No pending account closure found."
+  },
+  {
+    "code": "error.404.not_found",
+    "status": 404,
+    "params": [],
+    "remediation": "retry",
+    "en": "Requested resource not found"
+  },
+  {
+    "code": "error.404.verification_challenge_not_found",
+    "status": 404,
+    "params": [],
+    "remediation": "verify",
+    "en": "Verification challenge not found or expired"
+  },
+  {
+    "code": "error.405.method_not_allowed",
+    "status": 405,
+    "params": [],
+    "remediation": "retry",
+    "en": "Method not allowed"
+  },
+  {
+    "code": "error.406.not_acceptable",
+    "status": 406,
+    "params": [],
+    "remediation": "retry",
+    "en": "Not acceptable"
+  },
+  {
+    "code": "error.408.request_timeout",
+    "status": 408,
+    "params": [],
+    "remediation": "retry",
+    "en": "Request timeout"
+  },
+  {
+    "code": "error.409.conflict",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Resource already exists"
+  },
+  {
+    "code": "error.409.gdpr.closure_already_pending",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Account closure is already in progress."
+  },
+  {
+    "code": "error.409.gdpr.export_cooldown",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "A data export was already requested in the last 30 days."
+  },
+  {
+    "code": "error.409.gdpr.legal_hold",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Account data is under a legal hold and cannot be deleted."
+  },
+  {
+    "code": "error.410.gdpr.download_consumed",
+    "status": 410,
+    "params": [],
+    "remediation": "retry",
+    "en": "Download link was already used. Request a new export."
+  },
+  {
+    "code": "error.410.gdpr.download_expired",
+    "status": 410,
+    "params": [],
+    "remediation": "retry",
+    "en": "Download link has expired."
+  },
+  {
+    "code": "error.410.gone",
+    "status": 410,
+    "params": [],
+    "remediation": "retry",
+    "en": "Resource has been permanently removed"
+  },
+  {
+    "code": "error.413.payload_too_large",
+    "status": 413,
+    "params": [],
+    "remediation": "retry",
+    "en": "Request body is too large"
+  },
+  {
+    "code": "error.415.unsupported_media_type",
+    "status": 415,
+    "params": [],
+    "remediation": "retry",
+    "en": "Unsupported media type"
+  },
+  {
+    "code": "error.422.unprocessable_entity",
+    "status": 422,
+    "params": [],
+    "remediation": "wait_and_retry",
+    "en": "Unprocessable entity"
+  },
+  {
+    "code": "error.423.locked",
+    "status": 423,
+    "params": [],
+    "remediation": "wait_and_retry",
+    "en": "Resource is locked"
+  },
+  {
+    "code": "error.423.verification_locked",
+    "status": 423,
+    "params": [],
+    "remediation": "wait_and_retry",
+    "en": "Too many failed attempts — verification locked"
+  },
+  {
+    "code": "error.425.gdpr.export_not_ready",
+    "status": 425,
+    "params": [],
+    "remediation": "retry",
+    "en": "Export is still being prepared."
+  },
+  {
+    "code": "error.429.rate_limit",
+    "status": 429,
+    "params": [
+      "retry_after_minutes"
+    ],
+    "remediation": "wait_and_retry",
+    "en": "Too many attempts. Try again in {retry_after_minutes} minutes."
+  },
+  {
+    "code": "error.429.too_many_requests",
+    "status": 429,
+    "params": [],
+    "remediation": "wait_and_retry",
+    "en": "Too many requests. Please try again later."
+  },
+  {
+    "code": "error.500.internal",
+    "status": 500,
+    "params": [],
+    "remediation": "contact_support",
+    "en": "Something went wrong"
+  },
+  {
+    "code": "error.503.gdpr.closure_unavailable",
+    "status": 503,
+    "params": [],
+    "remediation": "retry",
+    "en": "Account closure is temporarily unavailable. Please retry later."
+  }
+]
