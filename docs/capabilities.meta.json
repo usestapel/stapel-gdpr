@@ -1,11 +1,15 @@
 {
   "_comment": "Curated layer for the `surface` section of docs/capabilities.json (discoverability-design.md §1.2). NOTE the honest boundary: stapel-gdpr's capabilities.json is otherwise still HAND-WRITTEN (git log: 'author capabilities.json for the stapel-catalog sweep') — this module has no gate registry and no docs/schema.json, so provides/axes/extension_points/operations_total/requires are not derived from code and are not drift-gated. `make contract` patches in the two derivable things: module/version from pyproject and the derived `surface`. The module's main call surface — the gdpr_orchestrator singleton (request_export/initiate_closure/cancel_closure/execute_deletion) — has NO representation here: the closed selector set (permission_classes/functions/capability_fields/templates) has no selector for 'methods of a published singleton instance', only module-level functions/classes/fields/templates. That gap is real, not an oversight; `provides` already names the orchestrator in prose. What IS representable and IS selected below: the two standalone modules a product is meant to call directly instead of re-deriving the same logic — the signup-time re-registration check (reregistration.py) and the Celery beat wiring for the four scheduled GDPR workers (tasks.py), whose entire risk shape (a scheduled worker nobody wired into CELERY_BEAT_SCHEDULE silently never runs) matches the incident this section exists to prevent.",
-
   "surface_roots": [
-    {"select": "functions", "path": "reregistration.py"},
-    {"select": "functions", "path": "tasks.py"}
+    {
+      "select": "functions",
+      "path": "reregistration.py"
+    },
+    {
+      "select": "functions",
+      "path": "tasks.py"
+    }
   ],
-
   "surface": {
     "is_reregistration": {
       "kind": "predicate",
@@ -16,14 +20,14 @@
     },
     "store_hashes": {
       "kind": "factory",
-      "intent": "Persist salted re-registration hashes for a user about to be erased (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls this before erasure runs; reach for it directly only from a custom deletion path that bypasses the orchestrator — never hand-roll the hashing, it must stay byte-for-byte compatible with is_reregistration's read side.",
+      "intent": "Persist re-registration hashes for a user about to be erased, in the one keyed-HMAC scheme this library defines (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls it before erasure runs; call it directly from any OTHER writer that wants a row in ReRegistrationHash — rows written around it are recorded as scheme='unverified', never match a lookup, and are reported by the gdpr.E004 system check.",
       "instead_of": [
         "hand-rolled hashing of email/phone for post-deletion re-registration memory"
       ]
     },
     "compute_hash": {
       "kind": "factory",
-      "intent": "The low-level salted SHA-256 primitive underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration instead unless you are writing a one-off data migration/backfill that needs the exact same hash for an existing ReRegistrationHash row."
+      "intent": "The low-level purpose-bound keyed HMAC underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. This is the ONE re-registration hash format in the fleet: the store lives in this library, so its format is defined here and every writer must go through store_hashes rather than hashing into the table itself (a plain SHA-256 of a normalized email is dictionary-recoverable). NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration unless you are writing a one-off data migration that needs the exact same digest for an existing row."
     },
     "get_gdpr_beat_schedule": {
       "kind": "factory",
@@ -55,6 +59,22 @@
     "notify_llm_providers_of_deletion": {
       "kind": "gate_function",
       "intent": "Call this from a custom GDPRProvider's delete()/anonymize() whenever that provider's data was ever sent to a third-party LLM provider, to leave an auditable log line of the DPA deletion obligation you still must action manually (this module does not call any LLM provider's API itself). Nothing in stapel-gdpr wires this automatically — it exists only to be called from your own provider, and an unwired one is silent by construction."
+    },
+    "purge_unverified_hashes": {
+      "kind": "gate_function",
+      "intent": "Delete ReRegistrationHash rows that did not come through store_hashes (unknown, probably unsalted digest format) — the remediation half of the gdpr.E004 check, also exposed as `manage.py gdpr_purge_unverified_hashes`. Reach for it after pointing a stray writer at store_hashes; the rows it deletes are PII retained for a purpose they cannot serve, since a lookup never matches them."
+    },
+    "purge_expired_exports": {
+      "kind": "gate_function",
+      "intent": "Hourly Celery task that deletes export ZIPs whose download window closed or whose single-use token was already spent. Wire it via get_gdpr_beat_schedule: without it every export archive — a complete personal-data dump per user — stays on the filesystem forever, which is exactly the retention gap the audit found."
+    },
+    "sweep_deletion_deadlines": {
+      "kind": "gate_function",
+      "intent": "Hourly Celery task that flips deletion parts whose data owner never confirmed to TIMEOUT, keeping the closure out of DELETED and putting the silent owner's name in the log. Wire it via get_gdpr_beat_schedule; unwired, an owner's silence is indistinguishable from an owner still working."
+    },
+    "expire_export": {
+      "kind": "gate_function",
+      "intent": "Expire one export request: delete its archive from disk and drop its token. Shared by the download view (a token spent after the window) and purge_expired_exports, so 'expired' means the ZIP is gone on both paths. Call it directly only to retire one specific request out of band."
     }
   }
 }

@@ -10,6 +10,13 @@ Public API (all attributes are lazily imported via PEP 562, so importing
   previously deleted account? (:mod:`stapel_gdpr.reregistration`)
 - ``store_hashes``      — persist salted identifier hashes before erasure
   (:mod:`stapel_gdpr.reregistration`).
+- ``access_state`` / ``is_access_denied`` — server-side lifecycle state of an
+  account, read from the closure row rather than from ``is_active`` (which a
+  stale token can flip back). :mod:`stapel_gdpr.lifecycle`.
+- ``AccountClosureGuardMiddleware`` — refuses every request of an erasing or
+  erased account, fleet-wide (:mod:`stapel_gdpr.guards`).
+- ``data_owner_report`` — the declared data-owner inventory measured against
+  what is actually wired (:mod:`stapel_gdpr.owners`).
 - ``LegalHold``         — Django model blocking closure/deletion while data must
   be preserved (GDPR Art. 17(3)). Requires configured Django settings with
   ``stapel_gdpr`` in ``INSTALLED_APPS``::
@@ -19,9 +26,13 @@ Public API (all attributes are lazily imported via PEP 562, so importing
 """
 
 __all__ = [
+    "AccountClosureGuardMiddleware",
     "LegalHold",
+    "access_state",
+    "data_owner_report",
     "gdpr_orchestrator",
     "gdpr_settings",
+    "is_access_denied",
     "is_reregistration",
     "store_hashes",
 ]
@@ -34,6 +45,10 @@ _LAZY_EXPORTS = {
     "is_reregistration": ("stapel_gdpr.reregistration", "is_reregistration"),
     "store_hashes": ("stapel_gdpr.reregistration", "store_hashes"),
     "LegalHold": ("stapel_gdpr.models", "LegalHold"),
+    "access_state": ("stapel_gdpr.lifecycle", "access_state"),
+    "is_access_denied": ("stapel_gdpr.lifecycle", "is_access_denied"),
+    "data_owner_report": ("stapel_gdpr.owners", "data_owner_report"),
+    "AccountClosureGuardMiddleware": ("stapel_gdpr.guards", "AccountClosureGuardMiddleware"),
 }
 
 

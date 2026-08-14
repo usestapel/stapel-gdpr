@@ -30,15 +30,30 @@ def _assert_error_envelope(resp, status, localizable_error):
     assert "params" in body
 
 
+def _download(client, token=None):
+    body = {} if token is None else {"token": token}
+    return client.post(
+        "/gdpr/api/v1/user/data-export/download", body, format="json",
+    )
+
+
 @pytest.mark.django_db
 class TestDownloadMatrix:
-    def test_get_without_token_404(self, authed_client, user):
+    def test_without_token_404(self, authed_client, user):
         _assert_error_envelope(
-            authed_client.get("/gdpr/api/v1/user/data-export/download"),
+            _download(authed_client),
             404, "error.404.gdpr.export_not_found",
         )
 
-    def test_get_wrong_user_404(self, api_client, user, tmp_path):
+    def test_token_in_query_string_is_not_accepted(self, authed_client, user, tmp_path):
+        """The GET form leaked a live credential into logs and history."""
+        req, token = _ready_request(user, tmp_path)
+        resp = authed_client.get(
+            f"/gdpr/api/v1/user/data-export/download?token={token}",
+        )
+        assert resp.status_code == 405
+
+    def test_wrong_user_404(self, api_client, user, tmp_path):
         req, token = _ready_request(user, tmp_path)
 
         from django.contrib.auth import get_user_model
@@ -48,21 +63,21 @@ class TestDownloadMatrix:
         )
         api_client.force_authenticate(user=other)
         _assert_error_envelope(
-            api_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
+            _download(api_client, token),
             404, "error.404.gdpr.export_not_found",
         )
 
-    def test_get_not_ready_425(self, authed_client, user, tmp_path):
+    def test_not_ready_425(self, authed_client, user, tmp_path):
         req, token = _ready_request(user, tmp_path)
         DataExportRequest.objects.filter(pk=req.pk).update(
             status=DataExportRequest.STATUS_PROCESSING,
         )
         _assert_error_envelope(
-            authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
+            _download(authed_client, token),
             425, "error.425.gdpr.export_not_ready",
         )
 
-    def test_get_expired_410_flips_status(self, authed_client, user, tmp_path):
+    def test_expired_410_flips_status_and_deletes_archive(self, authed_client, user, tmp_path):
         from datetime import timedelta
 
         req, token = _ready_request(user, tmp_path)
@@ -70,21 +85,27 @@ class TestDownloadMatrix:
             download_expires_at=timezone.now() - timedelta(seconds=1),
         )
         _assert_error_envelope(
-            authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
+            _download(authed_client, token),
             410, "error.410.gdpr.download_expired",
         )
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_EXPIRED
+        # An expired export keeps no archive on disk.
+        assert not (tmp_path / "export.zip").exists()
+        assert req.archive_path is None
 
-    def test_get_missing_file_500(self, authed_client, user, tmp_path):
+    def test_missing_file_500(self, authed_client, user, tmp_path):
         req, token = _ready_request(user, tmp_path)
         DataExportRequest.objects.filter(pk=req.pk).update(
             archive_path=str(tmp_path / "vanished.zip"),
         )
         _assert_error_envelope(
-            authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}"),
+            _download(authed_client, token),
             500, "error.500.internal",
         )
+        req.refresh_from_db()
+        # A failed serve must not burn the token.
+        assert req.download_consumed_at is None
 
     def test_post_success_streams_zip(self, authed_client, user, tmp_path):
         req, token = _ready_request(user, tmp_path)
@@ -153,7 +174,7 @@ class TestErrorBranches:
         body = resp.json()
         assert set(body) == {
             "request_id", "status", "parts_done", "parts_total",
-            "download_available", "expires_at",
+            "download_available", "expires_at", "is_partial", "missing_services",
         }
         assert body["parts_total"] == 2
         assert body["parts_done"] == 0

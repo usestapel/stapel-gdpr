@@ -41,6 +41,78 @@ def sweep_pending_exports():
     gdpr_orchestrator.sweep_deadlines()
 
 
+def expire_export(req) -> None:
+    """Mark one export expired and delete its archive from disk.
+
+    Shared by the download view (a token spent too late) and the scheduled
+    purge, so an expired export means "the ZIP is gone" in both paths.
+    """
+    import os
+
+    from .models import DataExportRequest
+
+    path = req.archive_path
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError as e:
+            logger.error('Failed to delete expired GDPR archive [request=%s path=%s]: %s',
+                         req.pk, path, e)
+    DataExportRequest.objects.filter(pk=req.pk).update(
+        status=DataExportRequest.STATUS_EXPIRED,
+        archive_path=None,
+        download_token=None,
+        download_token_hash=None,
+    )
+
+
+@shared_task
+def purge_expired_exports() -> int:
+    """Delete export archives whose download window closed. Returns the count.
+
+    Archives used to be written to the local filesystem and left there: a
+    complete personal-data dump per user, kept forever, with a token that
+    stayed valid for a week. Retention has to be enforced by something that
+    runs, so this is a scheduled task with a number in the log rather than a
+    sentence in the docs.
+    """
+    from .models import DataExportRequest
+
+    stale = DataExportRequest.objects.filter(
+        download_expires_at__lte=timezone.now(),
+    ).exclude(status=DataExportRequest.STATUS_EXPIRED)
+
+    purged = 0
+    for req in stale:
+        expire_export(req)
+        purged += 1
+
+    # Consumed downloads keep no archive either — the row survives as a
+    # record of the request, the ZIP does not.
+    orphans = DataExportRequest.objects.filter(
+        download_consumed_at__isnull=False,
+    ).exclude(archive_path=None)
+    for req in orphans:
+        expire_export(req)
+        purged += 1
+
+    if purged:
+        logger.info('GDPR export purge: %s archives removed', purged)
+    return purged
+
+
+@shared_task
+def sweep_deletion_deadlines() -> int:
+    """Time out deletion parts whose owner never confirmed. Returns the count.
+
+    A timed-out part keeps blocking the DELETED status; this task is what
+    makes an owner's silence visible instead of eternal.
+    """
+    from .orchestrator import gdpr_orchestrator
+
+    return gdpr_orchestrator.sweep_deletion_deadlines()
+
+
 # ---------------------------------------------------------------------------
 # Account closure worker
 # ---------------------------------------------------------------------------
@@ -210,5 +282,13 @@ def get_gdpr_beat_schedule() -> dict:
         'gdpr-retention-cleanup': {
             'task': 'stapel_gdpr.tasks.run_retention_cleanup',
             'schedule': crontab(hour=4, minute=0),  # daily at 04:00 UTC
+        },
+        'gdpr-export-archive-purge': {
+            'task': 'stapel_gdpr.tasks.purge_expired_exports',
+            'schedule': crontab(minute=15),         # every hour at :15
+        },
+        'gdpr-deletion-deadline-sweep': {
+            'task': 'stapel_gdpr.tasks.sweep_deletion_deadlines',
+            'schedule': crontab(minute=45),         # every hour at :45
         },
     }

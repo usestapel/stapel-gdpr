@@ -10,9 +10,13 @@ def test_all_contents():
     import stapel_gdpr
 
     assert stapel_gdpr.__all__ == [
+        "AccountClosureGuardMiddleware",
         "LegalHold",
+        "access_state",
+        "data_owner_report",
         "gdpr_orchestrator",
         "gdpr_settings",
+        "is_access_denied",
         "is_reregistration",
         "store_hashes",
     ]
@@ -33,6 +37,15 @@ def test_lazy_attributes_resolve_under_django():
     assert stapel_gdpr.is_reregistration is is_reregistration
     assert stapel_gdpr.store_hashes is store_hashes
     assert stapel_gdpr.LegalHold is models_legal_hold
+
+    from stapel_gdpr.guards import AccountClosureGuardMiddleware
+    from stapel_gdpr.lifecycle import access_state, is_access_denied
+    from stapel_gdpr.owners import data_owner_report
+
+    assert stapel_gdpr.access_state is access_state
+    assert stapel_gdpr.is_access_denied is is_access_denied
+    assert stapel_gdpr.data_owner_report is data_owner_report
+    assert stapel_gdpr.AccountClosureGuardMiddleware is AccountClosureGuardMiddleware
 
 
 def test_unknown_attribute_raises():

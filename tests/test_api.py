@@ -31,7 +31,7 @@ class TestExportAPI:
         resp = authed_client.get("/gdpr/api/v1/user/data-export/status")
         assert resp.status_code == 404
 
-    def test_download_get_and_post(self, authed_client, user, tmp_path):
+    def test_download_is_post_only_and_single_use(self, authed_client, user, tmp_path):
         archive = tmp_path / "export.zip"
         import zipfile
 
@@ -46,14 +46,24 @@ class TestExportAPI:
         )
         token = req.generate_download_token()
 
+        # The token in a query string is gone: GET is not a download verb here.
         resp = authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}")
-        assert resp.status_code == 200
-        assert resp["Content-Type"] == "application/zip"
+        assert resp.status_code == 405
 
         resp = authed_client.post(
             "/gdpr/api/v1/user/data-export/download", {"token": token}, format="json",
         )
         assert resp.status_code == 200
+        assert resp["Content-Type"] == "application/zip"
+        assert resp["Cache-Control"] == "no-store, private"
+        b"".join(resp.streaming_content)
+
+        # Single use: the second attempt is refused and the archive is gone.
+        resp = authed_client.post(
+            "/gdpr/api/v1/user/data-export/download", {"token": token}, format="json",
+        )
+        assert resp.status_code == 410
+        assert not archive.exists()
 
         resp = authed_client.post(
             "/gdpr/api/v1/user/data-export/download", {"token": "wrong"}, format="json",
@@ -78,7 +88,9 @@ class TestExportAPI:
         DataExportRequest.objects.filter(pk=req.pk).update(
             download_expires_at=timezone.now() - timedelta(minutes=1),
         )
-        resp = authed_client.get(f"/gdpr/api/v1/user/data-export/download?token={token}")
+        resp = authed_client.post(
+            "/gdpr/api/v1/user/data-export/download", {"token": token}, format="json",
+        )
         assert resp.status_code == 410
 
     def test_unauthenticated_rejected(self, api_client, db):

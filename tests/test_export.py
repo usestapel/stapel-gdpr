@@ -33,8 +33,12 @@ class TestExportPipeline:
 
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_READY
-        assert req.download_token
-        assert req.download_expires_at > timezone.now() + timedelta(days=6)
+        # Only the digest is stored, and the window is hours, not a week.
+        assert req.download_token is None
+        assert req.download_token_hash
+        assert req.download_consumed_at is None
+        assert req.download_expires_at > timezone.now() + timedelta(hours=23)
+        assert req.download_expires_at < timezone.now() + timedelta(hours=25)
 
         # archive lands under MEDIA_ROOT/gdpr/exports with the provider data
         archive = Path(req.archive_path)
@@ -104,7 +108,7 @@ class TestRemotePartsAndSweep:
         with zipfile.ZipFile(req.archive_path) as zf:
             readme = next(n for n in zf.namelist() if n.endswith("README.txt"))
             text = zf.read(readme).decode()
-            assert "partial export" in text
+            assert "PARTIAL export" in text
             assert "cdn" in text
 
 
@@ -114,7 +118,7 @@ class TestAssemblyRace:
         req = gdpr_orchestrator.request_export(user.pk)
         gdpr_orchestrator.run_export(req.pk)
         req.refresh_from_db()
-        token_before = req.download_token
+        token_before = req.download_token_hash
         mtime_before = Path(req.archive_path).stat().st_mtime_ns
 
         # a late duplicate completion must be a no-op
@@ -122,7 +126,7 @@ class TestAssemblyRace:
         gdpr_orchestrator.mark_part_ready(req.correlation_id, "fake", "")
 
         req.refresh_from_db()
-        assert req.download_token == token_before
+        assert req.download_token_hash == token_before
         assert Path(req.archive_path).stat().st_mtime_ns == mtime_before
 
     def test_assembling_status_blocks_second_builder(self, settings, user):

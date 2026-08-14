@@ -138,7 +138,7 @@ class TestExportTasks:
 
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_READY
-        assert req.download_token
+        assert req.download_token_hash
 
 
 @pytest.mark.django_db
@@ -175,6 +175,10 @@ class TestMiscTasks:
             "gdpr-account-closure-worker",
             "gdpr-inactivity-checker",
             "gdpr-retention-cleanup",
+            # Retention of the archives themselves and the owner-silence
+            # sweep are scheduled work too: unwired, they are the defect.
+            "gdpr-export-archive-purge",
+            "gdpr-deletion-deadline-sweep",
         }
         for entry in schedule.values():
             assert entry["task"].startswith("stapel_gdpr.tasks.")

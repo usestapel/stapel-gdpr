@@ -5,7 +5,6 @@ from django.http import FileResponse
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
-    OpenApiParameter,
     extend_schema,
     inline_serializer,
 )
@@ -28,10 +27,14 @@ from .errors import (
     ERR_409_CLOSURE_PENDING,
     ERR_409_EXPORT_COOLDOWN,
     ERR_409_LEGAL_HOLD,
+    ERR_410_DOWNLOAD_CONSUMED,
     ERR_410_DOWNLOAD_EXPIRED,
     ERR_425_EXPORT_NOT_READY,
+    ERR_503_CLOSURE_UNAVAILABLE,
+    SessionRevocationUnavailable,
 )
-from .models import AccountClosureRequest, DataExportRequest
+from .guards import AccountNotClosed
+from .models import AccountClosureRequest, DataExportRequest, hash_download_token
 from .orchestrator import gdpr_orchestrator
 from .serializers import (
     ClosureStatusSerializer,
@@ -68,7 +71,7 @@ class GDPRAPIView(APIView):
 
 
 class DataExportRequestView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
     response_serializer_class = ExportRequestSerializer
 
@@ -104,7 +107,7 @@ class DataExportRequestView(GDPRAPIView):
 
 
 class DataExportStatusView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
     response_serializer_class = ExportStatusSerializer
 
@@ -140,46 +143,44 @@ class DataExportStatusView(GDPRAPIView):
             status=export_req.status,
             parts_done=parts_done,
             parts_total=parts_total,
-            download_available=is_ready and bool(export_req.download_token),
+            download_available=(
+                is_ready
+                and bool(export_req.download_token_hash)
+                and export_req.download_consumed_at is None
+            ),
             expires_at=expires_at,
+            # An export missing sections must say so where the user looks,
+            # not only inside a README they may never open.
+            is_partial=export_req.is_partial,
+            missing_services=list(export_req.missing_services or []),
         )
         return StapelResponse(self.get_response_serializer_class()(dto))
 
 
 class DataExportDownloadView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated]
-    # Token travels as a raw query param / body field; the payload is a file.
+    """Spend the single-use download token. POST only, token in the body.
+
+    The GET variant took the token in the query string, which put a live
+    credential to a full personal-data archive into access logs, browser
+    history, Referer headers and every proxy in between — and it was never
+    consumed, so the "single-use" token in the docs was in fact a reusable
+    bearer credential for seven days. Now: body only, consumed atomically on
+    first success, archive deleted the moment it is served, ``no-store`` on
+    the response.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    # Token is a raw body field; the payload is a file.
     request_serializer_class = None
     response_serializer_class = None
 
     @extend_schema(
         summary="Download data export archive",
-        description="Returns the ZIP archive. Link is valid for 7 days after export is ready.",
-        parameters=[
-            OpenApiParameter(
-                "token",
-                str,
-                required=True,
-                description="Single-use download token bound to the authenticated user.",
-            )
-        ],
-        responses={
-            (200, "application/zip"): OpenApiTypes.BINARY,
-            404: StapelErrorSerializer,
-            410: StapelErrorSerializer,
-            425: StapelErrorSerializer,
-        },
-        tags=["GDPR"],
-    )
-    def get(self, request: Request):  # noqa: R007
-        return self._serve(request, request.query_params.get("token", ""))
-
-    @extend_schema(
-        summary="Download data export archive (token in body)",
         description=(
-            "Same as GET but the single-use token travels in the request body "
-            "instead of the URL, so it never lands in access logs or referrers. "
-            "Bound to the authenticated user."
+            "Spends the single-use token and streams the ZIP archive. The "
+            "token travels in the request body — never in the URL — and is "
+            "consumed on the first successful download; the archive is "
+            "deleted at the same moment. Bound to the authenticated user."
         ),
         request=inline_serializer(
             name="GDPRDownloadTokenRequest",
@@ -207,14 +208,18 @@ class DataExportDownloadView(GDPRAPIView):
             return StapelErrorResponse(404, ERR_404_EXPORT_NOT_FOUND)
 
         # Token is always bound to the authenticated user — knowing the token
-        # alone is not enough to fetch someone else's archive.
+        # alone is not enough to fetch someone else's archive. Only the digest
+        # is stored, so the lookup hashes first.
         export_req = DataExportRequest.objects.filter(
             user_id=request.user.pk,
-            download_token=token,
+            download_token_hash=hash_download_token(token),
         ).first()
 
         if not export_req:
             return StapelErrorResponse(404, ERR_404_EXPORT_NOT_FOUND)
+
+        if export_req.download_consumed_at is not None:
+            return StapelErrorResponse(410, ERR_410_DOWNLOAD_CONSUMED)
 
         if export_req.status != DataExportRequest.STATUS_READY:
             return StapelErrorResponse(425, ERR_425_EXPORT_NOT_READY)
@@ -223,24 +228,46 @@ class DataExportDownloadView(GDPRAPIView):
             export_req.download_expires_at
             and timezone.now() > export_req.download_expires_at
         ):
-            export_req.status = DataExportRequest.STATUS_EXPIRED
-            export_req.save(update_fields=["status"])
+            from .tasks import expire_export
+
+            expire_export(export_req)
             return StapelErrorResponse(410, ERR_410_DOWNLOAD_EXPIRED)
 
-        if not export_req.archive_path or not os.path.exists(export_req.archive_path):
+        archive_path = export_req.archive_path
+        if not archive_path or not os.path.exists(archive_path):
             logger.error(
                 "GDPR archive file missing: request=%s path=%s",
                 export_req.pk,
-                export_req.archive_path,
+                archive_path,
             )
             return error_500_internal()
 
+        # Consume BEFORE serving: the loser of a concurrent race must get 410
+        # rather than a second copy of the archive.
+        if not export_req.consume_download_token(token):
+            return StapelErrorResponse(410, ERR_410_DOWNLOAD_CONSUMED)
+
+        # The file is opened before it is unlinked: POSIX keeps the inode
+        # alive for this handle, so the response still streams while the
+        # archive stops existing for everyone else.
+        handle = open(archive_path, "rb")
+        try:
+            os.remove(archive_path)
+        except OSError as e:  # pragma: no cover - filesystem-dependent
+            logger.error("GDPR archive removal failed: request=%s path=%s err=%s",
+                         export_req.pk, archive_path, e)
+        DataExportRequest.objects.filter(pk=export_req.pk).update(archive_path=None)
+
         response = FileResponse(
-            open(export_req.archive_path, "rb"),
+            handle,
             content_type="application/zip",
             as_attachment=True,
             filename=f"personal_data_export_{export_req.created_at.strftime('%Y-%m-%d')}.zip",
         )
+        # An archive of everything we know about a person must not sit in a
+        # shared cache or on disk in the browser's cache directory.
+        response["Cache-Control"] = "no-store, private"
+        response["Pragma"] = "no-cache"
         return response
 
 
@@ -250,23 +277,35 @@ class DataExportDownloadView(GDPRAPIView):
 
 
 class AccountCloseView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer
 
     @extend_schema(
         summary="Initiate account closure",
-        description="Starts a 30-day grace period. Account is deactivated immediately. Can be cancelled by logging in.",
+        description=(
+            "Starts a 30-day grace period. The account is deactivated and all "
+            "of its sessions are revoked immediately. Can be cancelled by "
+            "logging in during the grace period."
+        ),
         request=None,
         responses={
             202: ClosureStatusSerializer,
             409: StapelErrorSerializer,
+            503: StapelErrorSerializer,
         },
         tags=["GDPR"],
     )
     def post(self, request: Request):  # noqa: R007
         try:
             closure = gdpr_orchestrator.initiate_closure(request.user.pk)
+        except SessionRevocationUnavailable as e:
+            # Deliberately a 503, not a 500: the deployment is misconfigured,
+            # the request was fine, and retrying after it is fixed is the
+            # right client behavior. Closing an account while its live tokens
+            # keep working is not an acceptable degraded mode.
+            logger.error("GDPR closure refused, sessions cannot be revoked: %s", e)
+            return StapelErrorResponse(503, ERR_503_CLOSURE_UNAVAILABLE)
         except ValueError as e:
             if str(e) == "closure_already_pending":
                 return StapelErrorResponse(409, ERR_409_CLOSURE_PENDING)
@@ -283,7 +322,7 @@ class AccountCloseView(GDPRAPIView):
 
 
 class AccountCancelCloseView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer
 
@@ -311,7 +350,7 @@ class AccountCancelCloseView(GDPRAPIView):
 
 
 class AccountCloseStatusView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer
 

@@ -19,6 +19,10 @@ SECTION_ERASED_SCHEMA = {
         "user_id":        {"type": "string"},
         "correlation_id": {"type": "string"},
         "service":        {"type": "string"},
+        # Opaque, owner-issued proof of erasure (job id, tombstone id, ...).
+        # Stored on the deletion part so a completed closure can be audited
+        # back to the thing each owner actually did.
+        "receipt_id":     {"type": "string"},
     },
     "additionalProperties": False,
 }
@@ -35,4 +39,6 @@ def handle_section_erased(event):
 
     from .orchestrator import gdpr_orchestrator
 
-    gdpr_orchestrator.mark_section_erased(correlation_id, service)
+    gdpr_orchestrator.mark_section_erased(
+        correlation_id, service, receipt_id=str(event.payload.get("receipt_id") or ""),
+    )

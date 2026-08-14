@@ -1,0 +1,215 @@
+"""GDPR-02: erasure completeness is proven, or it is not claimed.
+
+The orchestrator used to mark a closure DELETED as soon as the in-process
+providers returned — with the remote list empty, that check was vacuously
+true. A deployment with one registered provider therefore reported completed
+erasures while every other store kept the data. These tests pin the inverted
+default: no inventory, an unreachable owner, a stale inventory, a silent owner
+— each of them keeps the closure in DELETING and each of them is reported at
+boot.
+"""
+from datetime import timedelta
+
+import pytest
+from django.utils import timezone
+
+from stapel_gdpr.checks import check_data_owner_registry, check_reregistration_hashes
+from stapel_gdpr.models import (
+    AccountClosureRequest,
+    AccountDeletionPart,
+    DataExportRequest,
+)
+from stapel_gdpr.orchestrator import gdpr_orchestrator
+from stapel_gdpr.owners import data_owner_report
+from tests.support import gdpr_conf
+
+
+@pytest.fixture
+def wired(settings):
+    """A deployment that declared exactly the one provider it registered."""
+    settings.STAPEL_GDPR = gdpr_conf(
+        DATA_OWNERS=["fake"], DATA_OWNERS_VERSION="test-registry-1",
+    )
+    return settings
+
+
+@pytest.mark.django_db
+class TestCompletenessBlocksDeleted:
+    def test_unconfigured_registry_blocks_deleted(self, settings, user, fake_provider):
+        """The shape the audit found: nothing declared, everything "erased"."""
+        settings.STAPEL_GDPR = gdpr_conf()  # no DATA_OWNERS at all
+
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETING
+        assert closure.local_erasure_done is True  # the local half really ran
+        assert closure.deleted_at is None
+
+    def test_declared_but_unreachable_owner_blocks_deleted(
+        self, settings, user, fake_provider,
+    ):
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake", {"name": "recordings", "kind": "local"}],
+            DATA_OWNERS_VERSION="test-registry-2",
+        )
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETING
+        assert "recordings" in closure.unreceipted_owners
+
+    def test_registered_but_undeclared_provider_blocks_deleted(
+        self, settings, user, fake_provider,
+    ):
+        """A stale inventory cannot certify anything, even a superset one."""
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["profiles"], DATA_OWNERS_VERSION="test-registry-3",
+        )
+        report = data_owner_report()
+        assert report.undeclared == ("fake",)
+
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+        gdpr_orchestrator.mark_section_erased(closure.correlation_id, "profiles", "r-1")
+
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETING
+
+    def test_full_receipts_flip_deleted_and_record_them(self, settings, user, fake_provider):
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake", {"name": "recordings", "kind": "remote"}],
+            DATA_OWNERS_VERSION="test-registry-4",
+        )
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETING
+
+        gdpr_orchestrator.mark_section_erased(
+            closure.correlation_id, "recordings", "tombstone-42",
+        )
+
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETED
+        assert closure.completeness_waived is False
+        assert closure.registry_version == "test-registry-4"
+        receipts = dict(closure.parts.values_list("service", "receipt_id"))
+        assert receipts["recordings"] == "tombstone-42"
+        assert receipts["fake"]  # local owners leave a receipt too
+
+    def test_named_escape_hatch_finalizes_and_marks_the_waiver(
+        self, settings, user, fake_provider, caplog,
+    ):
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake", {"name": "recordings", "kind": "remote"}],
+            DATA_OWNERS_VERSION="test-registry-5",
+            ALLOW_ERASURE_WITHOUT_RECEIPTS=True,
+        )
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETED
+        assert closure.completeness_waived is True
+        assert any("without full receipts" in r.message for r in caplog.records)
+
+
+@pytest.mark.django_db
+class TestOwnerTimeout:
+    def test_silent_owner_times_out_and_keeps_blocking(self, settings, user, fake_provider):
+        from stapel_gdpr.tasks import sweep_deletion_deadlines
+
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake", {"name": "recordings", "kind": "remote", "timeout_hours": 1}],
+            DATA_OWNERS_VERSION="test-registry-6",
+        )
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+
+        part = closure.parts.get(service="recordings")
+        assert part.deadline is not None
+        AccountDeletionPart.objects.filter(pk=part.pk).update(
+            deadline=timezone.now() - timedelta(minutes=1),
+        )
+
+        assert sweep_deletion_deadlines() == 1
+        part.refresh_from_db()
+        assert part.status == AccountDeletionPart.STATUS_TIMEOUT
+
+        closure.refresh_from_db()
+        assert closure.status == AccountClosureRequest.STATUS_DELETING
+
+
+@pytest.mark.django_db
+class TestPartialExportIsExplicit:
+    def test_missing_owner_marks_the_export_partial(self, settings, user, fake_provider):
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake", {"name": "recordings", "kind": "remote"}],
+            DATA_OWNERS_VERSION="test-registry-7",
+        )
+        req = gdpr_orchestrator.request_export(user.pk)
+        gdpr_orchestrator.run_export(req.pk)
+
+        DataExportRequest.objects.filter(pk=req.pk).update(deadline=timezone.now())
+        gdpr_orchestrator.sweep_deadlines()
+
+        req.refresh_from_db()
+        assert req.status == DataExportRequest.STATUS_READY
+        assert req.is_partial is True
+        assert req.missing_services == ["recordings"]
+
+    def test_unconfigured_registry_makes_every_export_partial(
+        self, settings, user, fake_provider,
+    ):
+        settings.STAPEL_GDPR = gdpr_conf()
+        req = gdpr_orchestrator.request_export(user.pk)
+        gdpr_orchestrator.run_export(req.pk)
+
+        req.refresh_from_db()
+        assert req.status == DataExportRequest.STATUS_READY
+        assert req.is_partial is True
+
+    def test_complete_export_is_not_marked_partial(self, wired, user, fake_provider):
+        req = gdpr_orchestrator.request_export(user.pk)
+        gdpr_orchestrator.run_export(req.pk)
+
+        req.refresh_from_db()
+        assert req.is_partial is False
+        assert req.missing_services == []
+
+
+@pytest.mark.django_db
+class TestBootChecks:
+    def test_unconfigured_registry_is_a_boot_error(self, settings):
+        settings.STAPEL_GDPR = gdpr_conf()
+        ids = [m.id for m in check_data_owner_registry()]
+        assert "gdpr.E001" in ids
+
+    def test_missing_and_undeclared_owners_are_boot_errors(self, settings, fake_provider):
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=[{"name": "recordings", "kind": "local"}],
+            DATA_OWNERS_VERSION="v1",
+        )
+        messages = [str(m) for m in check_data_owner_registry()]
+        assert any("recordings" in m for m in messages)
+        assert any("fake" in m for m in messages)
+
+    def test_open_escape_hatch_is_reported(self, settings, fake_provider):
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake"],
+            DATA_OWNERS_VERSION="v1",
+            ALLOW_ERASURE_WITHOUT_RECEIPTS=True,
+        )
+        warnings = [m for m in check_data_owner_registry() if m.id == "gdpr.W003"]
+        assert any("ALLOW_ERASURE_WITHOUT_RECEIPTS" in str(w) for w in warnings)
+
+    def test_missing_revoker_is_reported(self, settings, fake_provider):
+        settings.STAPEL_GDPR = {"DATA_OWNERS": ["fake"], "DATA_OWNERS_VERSION": "v1"}
+        assert any(m.id == "gdpr.W005" for m in check_data_owner_registry())
+
+    def test_wired_deployment_is_clean(self, wired, fake_provider):
+        assert check_data_owner_registry() == []
+        assert check_reregistration_hashes() == []

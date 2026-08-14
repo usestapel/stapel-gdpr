@@ -40,7 +40,7 @@
       "name": "compute_hash",
       "kind": "factory",
       "path": "stapel_gdpr.reregistration.compute_hash",
-      "intent": "The low-level salted SHA-256 primitive underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration instead unless you are writing a one-off data migration/backfill that needs the exact same hash for an existing ReRegistrationHash row."
+      "intent": "The low-level purpose-bound keyed HMAC underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. This is the ONE re-registration hash format in the fleet: the store lives in this library, so its format is defined here and every writer must go through store_hashes rather than hashing into the table itself (a plain SHA-256 of a normalized email is dictionary-recoverable). NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration unless you are writing a one-off data migration that needs the exact same digest for an existing row."
     },
     {
       "name": "is_reregistration",
@@ -52,10 +52,16 @@
       ]
     },
     {
+      "name": "purge_unverified_hashes",
+      "kind": "gate_function",
+      "path": "stapel_gdpr.reregistration.purge_unverified_hashes",
+      "intent": "Delete ReRegistrationHash rows that did not come through store_hashes (unknown, probably unsalted digest format) — the remediation half of the gdpr.E004 check, also exposed as `manage.py gdpr_purge_unverified_hashes`. Reach for it after pointing a stray writer at store_hashes; the rows it deletes are PII retained for a purpose they cannot serve, since a lookup never matches them."
+    },
+    {
       "name": "store_hashes",
       "kind": "factory",
       "path": "stapel_gdpr.reregistration.store_hashes",
-      "intent": "Persist salted re-registration hashes for a user about to be erased (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls this before erasure runs; reach for it directly only from a custom deletion path that bypasses the orchestrator — never hand-roll the hashing, it must stay byte-for-byte compatible with is_reregistration's read side.",
+      "intent": "Persist re-registration hashes for a user about to be erased, in the one keyed-HMAC scheme this library defines (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls it before erasure runs; call it directly from any OTHER writer that wants a row in ReRegistrationHash — rows written around it are recorded as scheme='unverified', never match a lookup, and are reported by the gdpr.E004 system check.",
       "instead_of": [
         "hand-rolled hashing of email/phone for post-deletion re-registration memory"
       ]
@@ -65,6 +71,12 @@
       "kind": "gate_function",
       "path": "stapel_gdpr.tasks.check_inactive_accounts",
       "intent": "Daily Celery task: sends 60-day and 14-day inactivity warning emails, then initiates closure at the 365-day inactivity mark. Wire it via get_gdpr_beat_schedule — this is the entire mechanism behind the module's inactivity-closure axis, there is no other trigger."
+    },
+    {
+      "name": "expire_export",
+      "kind": "gate_function",
+      "path": "stapel_gdpr.tasks.expire_export",
+      "intent": "Expire one export request: delete its archive from disk and drop its token. Shared by the download view (a token spent after the window) and purge_expired_exports, so 'expired' means the ZIP is gone on both paths. Call it directly only to retire one specific request out of band."
     },
     {
       "name": "get_gdpr_beat_schedule",
@@ -88,6 +100,12 @@
       "intent": "The Celery task that actually calls GDPROrchestrator.execute_deletion() for every account whose 30-day grace period elapsed, skipping users under an active LegalHold. This is the ONLY path that turns a scheduled closure into a real erasure — a deployment that forgot to register get_gdpr_beat_schedule() has working closure/cancel endpoints and never deletes a single account, with nothing anywhere saying so."
     },
     {
+      "name": "purge_expired_exports",
+      "kind": "gate_function",
+      "path": "stapel_gdpr.tasks.purge_expired_exports",
+      "intent": "Hourly Celery task that deletes export ZIPs whose download window closed or whose single-use token was already spent. Wire it via get_gdpr_beat_schedule: without it every export archive — a complete personal-data dump per user — stays on the filesystem forever, which is exactly the retention gap the audit found."
+    },
+    {
       "name": "run_data_export",
       "kind": "gate_function",
       "path": "stapel_gdpr.tasks.run_data_export",
@@ -100,13 +118,19 @@
       "intent": "Daily Celery task that purges ReRegistrationHash rows past their 24-month retention, skipping users under an active LegalHold. Wire it via get_gdpr_beat_schedule; without it expired hashes accumulate forever instead of aging out on schedule."
     },
     {
+      "name": "sweep_deletion_deadlines",
+      "kind": "gate_function",
+      "path": "stapel_gdpr.tasks.sweep_deletion_deadlines",
+      "intent": "Hourly Celery task that flips deletion parts whose data owner never confirmed to TIMEOUT, keeping the closure out of DELETED and putting the silent owner's name in the log. Wire it via get_gdpr_beat_schedule; unwired, an owner's silence is indistinguishable from an owner still working."
+    },
+    {
       "name": "sweep_pending_exports",
       "kind": "gate_function",
       "path": "stapel_gdpr.tasks.sweep_pending_exports",
       "intent": "Hourly Celery task that force-assembles a partial archive for any export request whose 24h deadline passed (a service down mid-export, or one that never responded). Wire it via get_gdpr_beat_schedule; call directly only for an out-of-band admin sweep."
     }
   ],
-  "operations_total": 8,
+  "operations_total": 7,
   "requires": [
     {
       "module": "stapel-core",

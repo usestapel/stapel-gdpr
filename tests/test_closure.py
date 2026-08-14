@@ -12,6 +12,7 @@ from stapel_gdpr.models import (
     ReRegistrationHash,
 )
 from stapel_gdpr.orchestrator import gdpr_orchestrator
+from tests.support import gdpr_conf
 
 
 def _expire_grace(closure):
@@ -105,7 +106,10 @@ class TestExecuteDeletion:
 @pytest.mark.django_db
 class TestRemoteDeletionParts:
     def test_parts_created_and_confirmations_flip_deleted(self, settings, user):
-        settings.STAPEL_GDPR = {"REMOTE_DELETION_SERVICES": ["profiles", "cdn"]}
+        settings.STAPEL_GDPR = gdpr_conf(
+            REMOTE_DELETION_SERVICES=["profiles", "cdn"],
+            DATA_OWNERS_VERSION="test-registry-1",
+        )
         closure = gdpr_orchestrator.initiate_closure(user.pk)
         gdpr_orchestrator.execute_deletion(closure)
 
@@ -135,11 +139,18 @@ class TestRemoteDeletionParts:
         assert closure.parts.filter(
             status=AccountDeletionPart.STATUS_DONE,
         ).count() == 2
+        # Every DONE part carries a durable receipt — the evidence the
+        # DELETED flip is now checked against.
+        assert all(p.receipt_id for p in closure.parts.all())
 
     def test_remote_confirmation_before_local_success_does_not_finalize(
         self, settings, user, fake_provider
     ):
-        settings.STAPEL_GDPR = {"REMOTE_DELETION_SERVICES": ["profiles"]}
+        settings.STAPEL_GDPR = gdpr_conf(
+            DATA_OWNERS=["fake"],
+            REMOTE_DELETION_SERVICES=["profiles"],
+            DATA_OWNERS_VERSION="test-registry-1",
+        )
         fake_provider.fail_delete = True
         closure = gdpr_orchestrator.initiate_closure(user.pk)
         gdpr_orchestrator.execute_deletion(closure)

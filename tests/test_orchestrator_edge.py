@@ -13,6 +13,7 @@ from stapel_gdpr.models import (
     DataExportRequest,
 )
 from stapel_gdpr.orchestrator import gdpr_orchestrator
+from tests.support import gdpr_conf
 
 
 @pytest.mark.django_db
@@ -155,10 +156,10 @@ class TestRunExportBranches:
         assert req.status == DataExportRequest.STATUS_READY
 
     def test_configured_staging_and_archive_roots(self, settings, tmp_path):
-        settings.STAPEL_GDPR = {
-            "STAGING_ROOT": str(tmp_path / "stage"),
-            "ARCHIVE_ROOT": str(tmp_path / "arch"),
-        }
+        settings.STAPEL_GDPR = gdpr_conf(
+            STAGING_ROOT=str(tmp_path / "stage"),
+            ARCHIVE_ROOT=str(tmp_path / "arch"),
+        )
         assert gdpr_orchestrator._staging_root() == tmp_path / "stage"
         assert gdpr_orchestrator._archive_root() == tmp_path / "arch"
 
@@ -214,7 +215,10 @@ class TestDeletionBranches:
         assert closure.status == AccountClosureRequest.STATUS_DELETING
 
     def test_duplicate_section_erased_confirmation_is_noop(self, settings, user):
-        settings.STAPEL_GDPR = {"REMOTE_DELETION_SERVICES": ["profiles", "cdn"]}
+        settings.STAPEL_GDPR = gdpr_conf(
+            REMOTE_DELETION_SERVICES=["profiles", "cdn"],
+            DATA_OWNERS_VERSION="test-registry-1",
+        )
         closure = gdpr_orchestrator.initiate_closure(user.pk)
         gdpr_orchestrator.execute_deletion(closure)
 
@@ -273,12 +277,12 @@ class TestDeletionBranches:
         with pytest.raises(RuntimeError, match="broker down"):
             gdpr_orchestrator._publish_delete_requested(uuid.uuid4(), "c", [])
 
-    def test_deactivate_reactivate_swallow_bad_ids(self, db, caplog):
-        gdpr_orchestrator._deactivate_user("not-a-uuid")
-        gdpr_orchestrator._reactivate_user("not-a-uuid")
-        messages = [r.message for r in caplog.records]
-        assert any("Failed to deactivate user" in m for m in messages)
-        assert any("Failed to reactivate user" in m for m in messages)
+    def test_lifecycle_flip_on_unknown_user_is_a_logged_noop(self, db, caplog):
+        from stapel_gdpr.lifecycle import set_active
+
+        assert set_active(uuid.uuid4(), False) is False
+        assert set_active(uuid.uuid4(), True) is False
+        assert sum("not found for is_active" in r.message for r in caplog.records) == 2
 
 
 @pytest.mark.django_db
@@ -310,7 +314,7 @@ class TestSweepPartialAssemble:
             readme = zf.read(
                 next(n for n in zf.namelist() if n.endswith("README.txt"))
             ).decode()
-            assert "partial export" in readme
+            assert "PARTIAL export" in readme
             assert "- cdn" in readme and "- profiles" in readme
             assert "Included sections:\n  - auth" in readme
             assert any(n.endswith("auth/export.json") for n in zf.namelist())

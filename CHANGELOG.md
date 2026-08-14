@@ -5,6 +5,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+Closes the three GDPR findings of the 2026-08-11 audit.
+
+- **GDPR-01 — closure was reversible and never erased the person.** Closure
+  deactivates through `lifecycle.set_active` (model save, so activation
+  observers fire) instead of `QuerySet.update`, revokes every session through
+  a resolvable seam (`SESSION_REVOKER`, auto-detecting stapel-auth) or refuses
+  to close at all, and erases the primary `users.User` row itself
+  (`PRIMARY_IDENTITY_ERASURE`: anonymize in place, delete, or a host callable)
+  with the result verified rather than trusted. "Is this account closed?" is
+  answered from the closure row by `lifecycle.access_state` — never from
+  `is_active`, which a JWT-to-DB user sync can write back — and enforced by
+  `guards.AccountNotClosed` on every view here plus the fleet-wide
+  `guards.AccountClosureGuardMiddleware`.
+- **GDPR-02 — erasure completeness was assumed.** `STAPEL_GDPR["DATA_OWNERS"]`
+  is now a mandatory, versioned inventory; every owner gets an
+  `AccountDeletionPart` with a deadline and must return a durable
+  `receipt_id`. A closure reaches `DELETED` only against a full receipt set,
+  a sound registry and an erased identity; missing, undeclared, failed or
+  timed-out owners keep it in `DELETING`. Exports that cannot account for an
+  owner are reported partial to the user (`is_partial`/`missing_services`),
+  not only in a README inside the ZIP.
+- **GDPR-03 — the download token was a week-long reusable bearer credential.**
+  Only a SHA-256 digest of the token is stored, it is spent by one atomic
+  conditional update, it travels in the POST body (URL fragment in the
+  notification link, never a query string), the response is `no-store`, and
+  the archive is deleted the moment it is served. `purge_expired_exports`
+  enforces retention on a schedule. Re-registration hashes moved to one
+  purpose-bound keyed HMAC with a per-row `scheme`; rows written around
+  `store_hashes` never match, are reported by `gdpr.E004`, and are removable
+  with `manage.py gdpr_purge_unverified_hashes`.
+
+### Added
+
+- Boot-time system checks (`gdpr.E001/E002/W003/E004/W005/E006`): a missing or
+  stale data-owner inventory, unverified hash rows, an unusable revocation or
+  identity-erasure seam, and every open escape hatch are reported by
+  `manage.py check`.
+- `user.sessions_revoked` comm action; `receipt_id` on `gdpr.section.erased`.
+- Celery tasks `purge_expired_exports` and `sweep_deletion_deadlines`, both
+  wired into `get_gdpr_beat_schedule()`.
+- Named escape hatches, off by default: `ALLOW_ERASURE_WITHOUT_RECEIPTS`,
+  `ALLOW_CLOSURE_WITHOUT_SESSION_REVOCATION`.
+
+### Changed
+
+- **Breaking:** `GET user/data-export/download` is gone; the token is spent
+  through `POST` only.
+- **Breaking:** a deployment must declare `DATA_OWNERS` and provide a session
+  revoker, or closures fail loudly (HTTP 503) instead of silently leaving data
+  and live tokens behind.
+
 ## [0.3.12] — 2026-08-02
 
 ### Added
