@@ -61,12 +61,13 @@ def test_committed_artifact_shape():
     assert codes == sorted(codes), "entries must be sorted by code"
     assert len(codes) == len(set(codes)), "codes must be unique"
     for e in entries:
-        assert set(e) == {"code", "status", "params", "remediation", "en"}
+        assert set(e) == {"code", "status", "params", "remediation", "en", "owner"}
         assert e["code"].startswith("error.")
         assert e["status"] == int(e["code"].split(".")[1])
         assert isinstance(e["params"], list)
         assert e["remediation"] in REMEDIATION_VOCAB
         assert e["en"] and isinstance(e["en"], str)
+        assert e["owner"] is None or isinstance(e["owner"], str)
         # Every `{param}` slot in the text is declared in params.
         slots = {m.group(1) for m in re.finditer(r"\{(\w+)\}", e["en"])}
         assert slots <= set(e["params"])
@@ -106,3 +107,4 @@ def test_service_keys_present():
         "error.503.gdpr.closure_unavailable",
     ):
         assert entries[code]["remediation"] in REMEDIATION_VOCAB, code
+        assert entries[code]["owner"] == "stapel_gdpr", code

@@ -4,28 +4,32 @@
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Bad request"
+    "en": "Bad request",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.captcha_invalid",
     "status": 400,
     "params": [],
     "remediation": "retry",
-    "en": "Captcha verification failed. Please try again."
+    "en": "Captcha verification failed. Please try again.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.captcha_required",
     "status": 400,
     "params": [],
     "remediation": "retry",
-    "en": "Captcha token is required."
+    "en": "Captcha token is required.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.expected_list",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Expected a list of items"
+    "en": "Expected a list of items",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.blank",
@@ -34,7 +38,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} may not be blank"
+    "en": "{field} may not be blank",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.does_not_exist",
@@ -43,7 +48,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} does not exist"
+    "en": "{field} does not exist",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.invalid",
@@ -52,7 +58,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} is invalid"
+    "en": "{field} is invalid",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.invalid_choice",
@@ -61,7 +68,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} is not a valid choice"
+    "en": "{field} is not a valid choice",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.max_length",
@@ -71,7 +79,8 @@
       "max_length"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at most {max_length} characters"
+    "en": "{field} must be at most {max_length} characters",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.max_value",
@@ -81,7 +90,8 @@
       "max_value"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at most {max_value}"
+    "en": "{field} must be at most {max_value}",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.min_length",
@@ -91,7 +101,8 @@
       "min_length"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at least {min_length} characters"
+    "en": "{field} must be at least {min_length} characters",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.min_value",
@@ -101,7 +112,8 @@
       "min_value"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be at least {min_value}"
+    "en": "{field} must be at least {min_value}",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.null",
@@ -110,7 +122,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} may not be null"
+    "en": "{field} may not be null",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.required",
@@ -119,7 +132,8 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} is required"
+    "en": "{field} is required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.field.unique",
@@ -128,231 +142,264 @@
       "field"
     ],
     "remediation": "fix_input",
-    "en": "{field} must be unique"
+    "en": "{field} must be unique",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.invalid_ad_id",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Invalid advertisement ID"
+    "en": "Invalid advertisement ID",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.validation_error",
     "status": 400,
     "params": [],
     "remediation": "fix_input",
-    "en": "Validation error"
+    "en": "Validation error",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.verification_failed",
     "status": 400,
     "params": [],
     "remediation": "verify",
-    "en": "Verification failed"
+    "en": "Verification failed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.400.verification_invalid_factor",
     "status": 400,
     "params": [],
     "remediation": "verify",
-    "en": "This verification factor is not available"
+    "en": "This verification factor is not available",
+    "owner": "stapel_core"
   },
   {
     "code": "error.401.unauthorized",
     "status": 401,
     "params": [],
     "remediation": "reauthenticate",
-    "en": "Authentication required"
+    "en": "Authentication required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.402.payment_required",
     "status": 402,
     "params": [],
     "remediation": "retry",
-    "en": "Payment required"
+    "en": "Payment required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.forbidden",
     "status": 403,
     "params": [],
     "remediation": "retry",
-    "en": "You do not have permission to perform this action"
+    "en": "You do not have permission to perform this action",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.gdpr.account_closed",
     "status": 403,
     "params": [],
     "remediation": "retry",
-    "en": "This account is being erased and can no longer be used."
+    "en": "This account is being erased and can no longer be used.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.403.network_blocked",
     "status": 403,
     "params": [],
     "remediation": "contact_support",
-    "en": "Requests from this network are not allowed"
+    "en": "Requests from this network are not allowed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.verification_enrollment_required",
     "status": 403,
     "params": [],
     "remediation": "verify",
-    "en": "Verification factor enrollment required"
+    "en": "Verification factor enrollment required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.403.verification_required",
     "status": 403,
     "params": [],
     "remediation": "verify",
-    "en": "Additional verification required"
+    "en": "Additional verification required",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.ad_not_found",
     "status": 404,
     "params": [],
     "remediation": "retry",
-    "en": "Listing not found"
+    "en": "Listing not found",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.gdpr.export_not_found",
     "status": 404,
     "params": [],
     "remediation": "retry",
-    "en": "Export request not found."
+    "en": "Export request not found.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.404.gdpr.no_active_closure",
     "status": 404,
     "params": [],
     "remediation": "fix_input",
-    "en": "No pending account closure found."
+    "en": "No pending account closure found.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.404.not_found",
     "status": 404,
     "params": [],
     "remediation": "retry",
-    "en": "Requested resource not found"
+    "en": "Requested resource not found",
+    "owner": "stapel_core"
   },
   {
     "code": "error.404.verification_challenge_not_found",
     "status": 404,
     "params": [],
     "remediation": "verify",
-    "en": "Verification challenge not found or expired"
+    "en": "Verification challenge not found or expired",
+    "owner": "stapel_core"
   },
   {
     "code": "error.405.method_not_allowed",
     "status": 405,
     "params": [],
     "remediation": "retry",
-    "en": "Method not allowed"
+    "en": "Method not allowed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.406.not_acceptable",
     "status": 406,
     "params": [],
     "remediation": "retry",
-    "en": "Not acceptable"
+    "en": "Not acceptable",
+    "owner": "stapel_core"
   },
   {
     "code": "error.408.request_timeout",
     "status": 408,
     "params": [],
     "remediation": "retry",
-    "en": "Request timeout"
+    "en": "Request timeout",
+    "owner": "stapel_core"
   },
   {
     "code": "error.409.conflict",
     "status": 409,
     "params": [],
     "remediation": "fix_input",
-    "en": "Resource already exists"
+    "en": "Resource already exists",
+    "owner": "stapel_core"
   },
   {
     "code": "error.409.gdpr.closure_already_pending",
     "status": 409,
     "params": [],
     "remediation": "fix_input",
-    "en": "Account closure is already in progress."
+    "en": "Account closure is already in progress.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.409.gdpr.export_cooldown",
     "status": 409,
     "params": [],
     "remediation": "fix_input",
-    "en": "A data export was already requested in the last 30 days."
+    "en": "A data export was already requested in the last 30 days.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.409.gdpr.legal_hold",
     "status": 409,
     "params": [],
     "remediation": "fix_input",
-    "en": "Account data is under a legal hold and cannot be deleted."
+    "en": "Account data is under a legal hold and cannot be deleted.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.410.gdpr.download_consumed",
     "status": 410,
     "params": [],
     "remediation": "retry",
-    "en": "Download link was already used. Request a new export."
+    "en": "Download link was already used. Request a new export.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.410.gdpr.download_expired",
     "status": 410,
     "params": [],
     "remediation": "retry",
-    "en": "Download link has expired."
+    "en": "Download link has expired.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.410.gone",
     "status": 410,
     "params": [],
     "remediation": "retry",
-    "en": "Resource has been permanently removed"
+    "en": "Resource has been permanently removed",
+    "owner": "stapel_core"
   },
   {
     "code": "error.413.payload_too_large",
     "status": 413,
     "params": [],
     "remediation": "retry",
-    "en": "Request body is too large"
+    "en": "Request body is too large",
+    "owner": "stapel_core"
   },
   {
     "code": "error.415.unsupported_media_type",
     "status": 415,
     "params": [],
     "remediation": "retry",
-    "en": "Unsupported media type"
+    "en": "Unsupported media type",
+    "owner": "stapel_core"
   },
   {
     "code": "error.422.unprocessable_entity",
     "status": 422,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Unprocessable entity"
+    "en": "Unprocessable entity",
+    "owner": "stapel_core"
   },
   {
     "code": "error.423.locked",
     "status": 423,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Resource is locked"
+    "en": "Resource is locked",
+    "owner": "stapel_core"
   },
   {
     "code": "error.423.verification_locked",
     "status": 423,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Too many failed attempts — verification locked"
+    "en": "Too many failed attempts — verification locked",
+    "owner": "stapel_core"
   },
   {
     "code": "error.425.gdpr.export_not_ready",
     "status": 425,
     "params": [],
     "remediation": "retry",
-    "en": "Export is still being prepared."
+    "en": "Export is still being prepared.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.429.rate_limit",
@@ -361,27 +408,31 @@
       "retry_after_minutes"
     ],
     "remediation": "wait_and_retry",
-    "en": "Too many attempts. Try again in {retry_after_minutes} minutes."
+    "en": "Too many attempts. Try again in {retry_after_minutes} minutes.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.429.too_many_requests",
     "status": 429,
     "params": [],
     "remediation": "wait_and_retry",
-    "en": "Too many requests. Please try again later."
+    "en": "Too many requests. Please try again later.",
+    "owner": "stapel_core"
   },
   {
     "code": "error.500.internal",
     "status": 500,
     "params": [],
     "remediation": "contact_support",
-    "en": "Something went wrong"
+    "en": "Something went wrong",
+    "owner": "stapel_core"
   },
   {
     "code": "error.503.gdpr.closure_unavailable",
     "status": 503,
     "params": [],
     "remediation": "retry",
-    "en": "Account closure is temporarily unavailable. Please retry later."
+    "en": "Account closure is temporarily unavailable. Please retry later.",
+    "owner": "stapel_gdpr"
   }
 ]
