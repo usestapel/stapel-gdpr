@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-gdpr"
-version = "0.4.1"
+version = "0.4.2"
 description = "GDPR data export and account deletion Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "stapel-core>=0.24.0,<1.0",
+    # Floor: 0.26.0 emits docs/errors.json with the `owner` field the
+    # committed artifact and its drift gate require.
+    "stapel-core>=0.26.0,<1.0",
     "celery>=5.3",
 ]
 
