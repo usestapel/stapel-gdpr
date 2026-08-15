@@ -18,6 +18,25 @@
       }
     }
   ],
+  "required_settings": [
+    {
+      "key": "DATA_OWNERS",
+      "kind": "list",
+      "example": [
+        "auth",
+        "profiles"
+      ],
+      "why": "Every store that holds personal data. An erasure is only marked DELETED when every owner listed here returned a receipt, so an owner missing from this list is a store that silently keeps the user's data forever — and an EMPTY list is a deployment that cannot certify a single erasure.",
+      "unset_check": "gdpr.E001"
+    },
+    {
+      "key": "DATA_OWNERS_VERSION",
+      "kind": "str",
+      "example": "2026-01-01.1",
+      "why": "Stamped onto every closure so an audit can tell which inventory a given erasure was judged by. Bump it whenever DATA_OWNERS changes.",
+      "unset_check": "gdpr.W003"
+    }
+  ],
   "extension_points": [
     {
       "name": "GDPR_PROVIDERS",

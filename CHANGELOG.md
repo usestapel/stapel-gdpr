@@ -5,6 +5,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — `required_settings` in `docs/capabilities.json`
+
+`gdpr.E001` is boot-fatal when `STAPEL_GDPR["DATA_OWNERS"]` is empty, so
+installing this app without that setting produces a service that cannot start.
+Nothing said so in a form a generator could read: both stapel example apps
+install `stapel_gdpr` and emit no `STAPEL_GDPR` block anywhere, and the
+scaffold's validator would in fact have *rejected* `DATA_OWNERS`, because it is
+not a capability axis.
+
+The artifact now declares it. `DATA_OWNERS` and `DATA_OWNERS_VERSION` each
+carry a `kind` and an `example` (shape enough for a generator to emit a correct
+placeholder), a `why` and the `unset_check` they prevent (prose enough for a
+human). `stapel-tools` reads the section and refuses to generate a project that
+installs this app with no value supplied — at generation time, not at first
+boot in production.
+
 ## [0.4.2] — 2026-08-15
 
 ### Changed — `stapel-core` floor raised to 0.26.0
