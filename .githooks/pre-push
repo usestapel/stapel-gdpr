@@ -3,3 +3,11 @@ set -e
 echo "Running ruff lint check before push..."
 ruff check . --select E,F,W --ignore E501
 echo "Lint check passed."
+
+# A private client name must not leave this machine in a public tree or a
+# commit message (stapel-exposure-lint EXP001/EXP002; the list is
+# ~/.stapel/private-names, outside every repo). Skipped where the tool is
+# not on PATH — a checkout without stapel-tools is not the owner's.
+if command -v stapel-exposure-lint >/dev/null 2>&1; then
+    stapel-exposure-lint . --commits
+fi
