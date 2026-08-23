@@ -14,7 +14,6 @@ from stapel_gdpr.orchestrator import gdpr_orchestrator
 from stapel_gdpr.tasks import (
     check_inactive_accounts,
     get_gdpr_beat_schedule,
-    notify_llm_providers_of_deletion,
     process_expired_grace_periods,
     run_data_export,
     sweep_pending_exports,
@@ -161,13 +160,6 @@ class TestGraceWorker:
 
 
 class TestMiscTasks:
-    def test_notify_llm_providers_logs_obligation(self, caplog):
-        import logging
-
-        with caplog.at_level(logging.INFO, logger="stapel_gdpr.tasks"):
-            notify_llm_providers_of_deletion("user-1", ["openrouter", "anthropic"])
-        assert any("LLM deletion obligation" in r.message for r in caplog.records)
-
     def test_beat_schedule_contains_all_sweeps(self):
         schedule = get_gdpr_beat_schedule()
         assert set(schedule) == {
@@ -179,6 +171,11 @@ class TestMiscTasks:
             # sweep are scheduled work too: unwired, they are the defect.
             "gdpr-export-archive-purge",
             "gdpr-deletion-deadline-sweep",
+            # Owner liveness and the DSAR clocks are scheduled work too: an
+            # owner nobody probes is silent, and an unswept DSAR deadline is
+            # a statutory one nobody is told about.
+            "gdpr-data-owner-probe",
+            "gdpr-dsar-deadline-sweep",
         }
         for entry in schedule.values():
             assert entry["task"].startswith("stapel_gdpr.tasks.")

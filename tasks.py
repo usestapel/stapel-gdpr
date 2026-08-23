@@ -103,14 +103,100 @@ def purge_expired_exports() -> int:
 
 @shared_task
 def sweep_deletion_deadlines() -> int:
-    """Time out deletion parts whose owner never confirmed. Returns the count.
+    """Time out erasure parts whose owner never confirmed. Returns the count.
 
-    A timed-out part keeps blocking the DELETED status; this task is what
-    makes an owner's silence visible instead of eternal.
+    A timed-out part keeps blocking the DELETED status, flips its request to
+    TIMEOUT and emits ``gdpr.erasure.timeout`` — this task is what makes an
+    owner's silence visible instead of eternal. Subject-agnostic since
+    0.5.0: it sweeps entity erasures exactly as it sweeps account ones.
     """
     from .orchestrator import gdpr_orchestrator
 
     return gdpr_orchestrator.sweep_deletion_deadlines()
+
+
+@shared_task
+def probe_data_owners() -> str:
+    """Ask every declared data owner to prove its erasure path is consumed.
+
+    Daily. Owners answer ``gdpr.owner.alive`` from the same subscriber that
+    handles erasure, and the answers land in ``DataOwnerHealth`` — which
+    ``gdpr.W006`` reads at boot. Unwired, an owner with no consumer process
+    is discoverable only by waiting for an erasure to time out, which is how
+    seven silent owners survived a fleet for months.
+    """
+    from .orchestrator import gdpr_orchestrator
+
+    return gdpr_orchestrator.probe_data_owners()
+
+
+# ---------------------------------------------------------------------------
+# DSAR deadlines
+# ---------------------------------------------------------------------------
+
+@shared_task
+def sweep_dsar_deadlines() -> int:
+    """Emit ``gdpr.dsar.overdue`` for every missed DSAR clock. Returns the count.
+
+    Daily. Two deadlines, both statutory: the acknowledgement (three
+    business days, normally met by the automated one at intake) and the
+    resolution (thirty days). Emitted once per deadline per request —
+    ``overdue_notified_at`` is the idempotency mark, so a daily sweep does
+    not turn one missed deadline into a daily alarm nobody reads.
+    """
+    from stapel_core.comm import mutate_and_emit
+
+    from .models import DsarRequest
+
+    now = timezone.now()
+    open_states = [
+        DsarRequest.STATE_RECEIVED,
+        DsarRequest.STATE_ACKNOWLEDGED,
+        DsarRequest.STATE_IN_PROGRESS,
+    ]
+
+    def _emit(dsar, deadline: str, due_at) -> None:
+        with mutate_and_emit() as emit:
+            DsarRequest.objects.filter(pk=dsar.pk).update(overdue_notified_at=now)
+            emit(
+                'gdpr.dsar.overdue',
+                {
+                    'dsar_id': dsar.pk,
+                    'kind': dsar.kind,
+                    'channel': dsar.channel,
+                    'state': dsar.state,
+                    'deadline': deadline,
+                    'due_at': due_at.isoformat(),
+                    'received_at': dsar.received_at.isoformat(),
+                },
+                key=str(dsar.pk),
+            )
+
+    count = 0
+    unacknowledged = DsarRequest.objects.filter(
+        ack_sent_at__isnull=True,
+        ack_due_at__lte=now,
+        overdue_notified_at__isnull=True,
+        state__in=open_states,
+    )
+    for dsar in unacknowledged:
+        _emit(dsar, 'acknowledgement', dsar.ack_due_at)
+        logger.error('GDPR DSAR acknowledgement overdue [dsar=%s due=%s]',
+                     dsar.pk, dsar.ack_due_at.isoformat())
+        count += 1
+
+    unresolved = DsarRequest.objects.filter(
+        resolve_due_at__lte=now,
+        overdue_notified_at__isnull=True,
+        state__in=open_states,
+    )
+    for dsar in unresolved:
+        _emit(dsar, 'resolution', dsar.resolve_due_at)
+        logger.error('GDPR DSAR resolution overdue [dsar=%s due=%s]',
+                     dsar.pk, dsar.resolve_due_at.isoformat())
+        count += 1
+
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -243,24 +329,6 @@ def run_retention_cleanup():
 
 
 # ---------------------------------------------------------------------------
-# LLM provider deletion
-# ---------------------------------------------------------------------------
-
-@shared_task
-def notify_llm_providers_of_deletion(user_id: str, providers_used: list[str]):
-    """
-    Log deletion request for LLM providers.
-    In practice this is a manual process via DPA — we log the obligation here.
-    """
-    from django.utils.timezone import now
-    logger.info(
-        'GDPR LLM deletion obligation recorded [user=%s providers=%s time=%s]',
-        user_id, providers_used, now().isoformat(),
-    )
-    # TODO: if providers expose a deletion API, call it here
-
-
-# ---------------------------------------------------------------------------
 # Beat schedule helper
 # ---------------------------------------------------------------------------
 
@@ -290,5 +358,13 @@ def get_gdpr_beat_schedule() -> dict:
         'gdpr-deletion-deadline-sweep': {
             'task': 'stapel_gdpr.tasks.sweep_deletion_deadlines',
             'schedule': crontab(minute=45),         # every hour at :45
+        },
+        'gdpr-data-owner-probe': {
+            'task': 'stapel_gdpr.tasks.probe_data_owners',
+            'schedule': crontab(hour=5, minute=0),  # daily at 05:00 UTC
+        },
+        'gdpr-dsar-deadline-sweep': {
+            'task': 'stapel_gdpr.tasks.sweep_dsar_deadlines',
+            'schedule': crontab(hour=6, minute=0),  # daily at 06:00 UTC
         },
     }
