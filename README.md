@@ -10,7 +10,7 @@
 [![license](https://img.shields.io/github/license/usestapel/stapel-gdpr)](https://github.com/usestapel/stapel-gdpr/blob/main/LICENSE)
 [![llms.txt](https://img.shields.io/badge/llms.txt-blue)](https://github.com/usestapel/stapel-gdpr/blob/main/docs/llms.txt)
 
-> GDPR compliance: staged async data export (Art. 15/20) with status polling and download, account deletion with a cancellable grace period (Art. 17), inactivity closure, retention cleanup, LegalHold (blocks closure/deletion) and ReRegistrationHash, orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote services.
+> GDPR compliance: staged async data export (Art. 15/20) with status polling and download; subject-scoped erasure (Art. 17) — account, workspace, meeting, recording, document, file — each proven by one receipt per data owner that claims the subject type, with a purge SLA, timeout sweep and a subprocessor ledger behind `fully_erased_by`; account closure keeps its cancellable 30-day grace and produces an ErasureRequest at grace end; DSAR intake (Art. 12) with automated acknowledgement and both statutory clocks; data-owner liveness probing; inactivity closure, retention cleanup, LegalHold and ReRegistrationHash; orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote owners.
 
 Part of the [Stapel framework](https://github.com/usestapel) — composable Django apps that deploy as a monolith or as microservices without changing module code.
 
@@ -24,13 +24,13 @@ pip install stapel-gdpr
 
 | Fact | Value |
 |---|---|
-| Version | `0.4.2` |
+| Version | `0.5.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 7 |
-| Config axes | 1 |
-| Usage surface | 14 |
-| Extension points | 3 |
-| Error codes | 51 |
+| Config axes | 3 |
+| Usage surface | 17 |
+| Extension points | 4 |
+| Error codes | 57 |
 | Fleet dependencies | [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation

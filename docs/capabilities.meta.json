@@ -1,5 +1,5 @@
 {
-  "_comment": "Curated layer for the `surface` section of docs/capabilities.json (discoverability-design.md §1.2). NOTE the honest boundary: stapel-gdpr's capabilities.json is otherwise still HAND-WRITTEN (git log: 'author capabilities.json for the stapel-catalog sweep') — this module has no gate registry and no docs/schema.json, so provides/axes/extension_points/operations_total/requires are not derived from code and are not drift-gated. `make contract` patches in the two derivable things: module/version from pyproject and the derived `surface`. The module's main call surface — the gdpr_orchestrator singleton (request_export/initiate_closure/cancel_closure/execute_deletion) — has NO representation here: the closed selector set (permission_classes/functions/capability_fields/templates) has no selector for 'methods of a published singleton instance', only module-level functions/classes/fields/templates. That gap is real, not an oversight; `provides` already names the orchestrator in prose. What IS representable and IS selected below: the two standalone modules a product is meant to call directly instead of re-deriving the same logic — the signup-time re-registration check (reregistration.py) and the Celery beat wiring for the four scheduled GDPR workers (tasks.py), whose entire risk shape (a scheduled worker nobody wired into CELERY_BEAT_SCHEDULE silently never runs) matches the incident this section exists to prevent.",
+  "_comment": "Curated layer for the `surface` section of docs/capabilities.json (discoverability-design.md §1.2). NOTE the honest boundary: stapel-gdpr's capabilities.json is otherwise still HAND-WRITTEN (git log: 'author capabilities.json for the stapel-catalog sweep') — this module has no gate registry and no docs/schema.json, so provides/axes/extension_points/operations_total/requires are not derived from code and are not drift-gated. `make contract` patches in the two derivable things: module/version from pyproject and the derived `surface`. The module's main call surface — the gdpr_orchestrator singleton (request_export/initiate_closure/cancel_closure/execute_deletion) — has NO representation here: the closed selector set (permission_classes/functions/capability_fields/templates) has no selector for 'methods of a published singleton instance', only module-level functions/classes/fields/templates. That gap is real, not an oversight; `provides` already names the orchestrator in prose. What IS representable and IS selected below: the two standalone modules a product is meant to call directly instead of re-deriving the same logic — the signup-time re-registration check (reregistration.py), the Celery beat wiring for the scheduled GDPR workers (tasks.py), whose entire risk shape (a scheduled worker nobody wired into CELERY_BEAT_SCHEDULE silently never runs) matches the incident this section exists to prevent, and the subprocessor ledger (subprocessors.py), which a data owner calls directly when its slice went to only some of the declared processors.",
   "surface_roots": [
     {
       "select": "functions",
@@ -8,6 +8,10 @@
     {
       "select": "functions",
       "path": "tasks.py"
+    },
+    {
+      "select": "functions",
+      "path": "subprocessors.py"
     }
   ],
   "surface": {
@@ -56,10 +60,6 @@
       "kind": "gate_function",
       "intent": "The Celery task that actually runs a single export request's in-process providers and assembles the archive. Normally triggered internally via `.delay()` from DataExportRequestView — call it directly only to retry/backfill one specific request_id."
     },
-    "notify_llm_providers_of_deletion": {
-      "kind": "gate_function",
-      "intent": "Call this from a custom GDPRProvider's delete()/anonymize() whenever that provider's data was ever sent to a third-party LLM provider, to leave an auditable log line of the DPA deletion obligation you still must action manually (this module does not call any LLM provider's API itself). Nothing in stapel-gdpr wires this automatically — it exists only to be called from your own provider, and an unwired one is silent by construction."
-    },
     "purge_unverified_hashes": {
       "kind": "gate_function",
       "intent": "Delete ReRegistrationHash rows that did not come through store_hashes (unknown, probably unsalted digest format) — the remediation half of the gdpr.E004 check, also exposed as `manage.py gdpr_purge_unverified_hashes`. Reach for it after pointing a stray writer at store_hashes; the rows it deletes are PII retained for a purpose they cannot serve, since a lookup never matches them."
@@ -75,6 +75,28 @@
     "expire_export": {
       "kind": "gate_function",
       "intent": "Expire one export request: delete its archive from disk and drop its token. Shared by the download view (a token spent after the window) and purge_expired_exports, so 'expired' means the ZIP is gone on both paths. Call it directly only to retire one specific request out of band."
+    },
+    "probe_data_owners": {
+      "kind": "gate_function",
+      "intent": "Daily Celery task that asks every declared data owner to prove its erasure path is CONSUMED (owners answer gdpr.owner.alive from the same subscriber that handles gdpr.erasure.requested). Wire it via get_gdpr_beat_schedule: the answers fill DataOwnerHealth, which the gdpr.W006 boot check and GET /owners/health read. Unwired, an owner whose consumer process was never deployed is discoverable only by waiting for an erasure to time out.",
+      "instead_of": [
+        "a health endpoint per owner service, which proves a container is up and not that its erasure subscriber runs"
+      ]
+    },
+    "sweep_dsar_deadlines": {
+      "kind": "gate_function",
+      "intent": "Daily Celery task that emits gdpr.dsar.overdue for every data-subject request past its acknowledgement (3 business days) or resolution (30 days) clock, once per deadline. Wire it via get_gdpr_beat_schedule; without it a missed statutory deadline is visible only to whoever opens the admin."
+    },
+    "record_subprocessor_obligations": {
+      "kind": "factory",
+      "intent": "Write the SubprocessorObligation rows for one erasure — one per processor in STAPEL_GDPR[\"SUBPROCESSORS\"], each with the date its contractual window closes. The orchestrator calls it automatically when an erasure reaches DELETED; call it directly from a data owner whose slice went to a SUBSET of the processors, passing that subset. This is what ErasureRequest.fully_erased_by is computed from, so a product can say \"erased from our systems on X, from every processor by Y\".",
+      "instead_of": [
+        "a log line recording the DPA deletion obligation, which no audit can query"
+      ]
+    },
+    "declared_subprocessors": {
+      "kind": "factory",
+      "intent": "STAPEL_GDPR[\"SUBPROCESSORS\"] resolved to (name, window_days) pairs, accepting both the bare-name and the {\"name\", \"window_days\"} forms. Read it instead of the raw setting when a host page or report needs to show which processors are declared and how long each one's window is."
     }
   }
 }

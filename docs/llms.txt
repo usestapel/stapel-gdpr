@@ -1,14 +1,18 @@
-# stapel-gdpr 0.4.2
+# stapel-gdpr 0.5.0
 
-GDPR compliance: staged async data export (Art. 15/20) with status polling and download, account deletion with a cancellable grace period (Art. 17), inactivity closure, retention cleanup, LegalHold (blocks closure/deletion) and ReRegistrationHash, orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote services.
+GDPR compliance: staged async data export (Art. 15/20) with status polling and download; subject-scoped erasure (Art. 17) — account, workspace, meeting, recording, document, file — each proven by one receipt per data owner that claims the subject type, with a purge SLA, timeout sweep and a subprocessor ledger behind `fully_erased_by`; account closure keeps its cancellable 30-day grace and produces an ErasureRequest at grace end; DSAR intake (Art. 12) with automated acknowledgement and both statutory clocks; data-owner liveness probing; inactivity closure, retention cleanup, LegalHold and ReRegistrationHash; orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote owners.
 
-Contract: axes 1 · surface 14 · extension points 3 · error codes 51.
+Contract: axes 3 · surface 17 · extension points 4 · error codes 57.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
 Settings keys; `default` is what you get by saying nothing. Turning an axis off unmounts the operations it gates.
 - REMOTE_DELETION_SERVICES [list, default []] — Remote services that must confirm account erasure
-  Service names that must confirm erasure via a gdpr.section.erased comm action before a closure is marked deleted; one AccountDeletionPart is created per entry in execute_deletion (conf.py, MODULE.md Extension points table).
+  Legacy pre-registry list of service names that must confirm erasure via a gdpr.section.erased comm action before an erasure is marked deleted; folded into DATA_OWNERS as kind='remote' entries claiming the `account` subject, one ErasurePart per entry (conf.py, MODULE.md Extension points table).
+- SUBJECT_TYPES [list, default ["account", "workspace", "meeting", "recording", "document", "file"]] — What can be put on the deletion clock
+  Subjects an erasure may be opened for. POST /erasures refuses a type outside this list (error.400.gdpr.unknown_subject_type), so a typo'd subject cannot become a request no owner can answer.
+- SUBPROCESSORS [list, default []] — Processors that also hold a copy, and how long they have
+  Third-party processors and their contractual deletion windows. One SubprocessorObligation row per entry is written when an erasure reaches DELETED; ErasureRequest.fully_erased_by is the max of our own due_at and those (subprocessors.py).
 
 ## Usage surface — call these before writing your own
 This is the answer to "does Stapel already have something for X?". `instead of` names the outside symbol this one displaces.
@@ -17,8 +21,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Daily Celery task: sends 60-day and 14-day inactivity warning emails, then initiates closure at the 365-day inactivity mark. Wire it via get_gdpr_beat_schedule — this is the entire mechanism behind the module's inactivity-closure axis, there is no other trigger.
 - expire_export — stapel_gdpr.tasks.expire_export
   Expire one export request: delete its archive from disk and drop its token. Shared by the download view (a token spent after the window) and purge_expired_exports, so 'expired' means the ZIP is gone on both paths. Call it directly only to retire one specific request out of band.
-- notify_llm_providers_of_deletion — stapel_gdpr.tasks.notify_llm_providers_of_deletion
-  Call this from a custom GDPRProvider's delete()/anonymize() whenever that provider's data was ever sent to a third-party LLM provider, to leave an auditable log line of the DPA deletion obligation you still must action manually (this module does not call any LLM provider's API itself). Nothing in stapel-gdpr wires this automatically — it exists only to be called from your own provider, and an unwired one is silent by construction.
+- probe_data_owners — stapel_gdpr.tasks.probe_data_owners
+  instead of: a health endpoint per owner service, which proves a container is up and not that its erasure subscriber runs
+  Daily Celery task that asks every declared data owner to prove its erasure path is CONSUMED (owners answer gdpr.owner.alive from the same subscriber that handles gdpr.erasure.requested). Wire it via get_gdpr_beat_schedule: the answers fill DataOwnerHealth, which the gdpr.W006 boot check and GET /owners/health read. Unwired, an owner whose consumer process was never deployed is discoverable only by waiting for an erasure to time out.
 - process_expired_grace_periods — stapel_gdpr.tasks.process_expired_grace_periods
   The Celery task that actually calls GDPROrchestrator.execute_deletion() for every account whose 30-day grace period elapsed, skipping users under an active LegalHold. This is the ONLY path that turns a scheduled closure into a real erasure — a deployment that forgot to register get_gdpr_beat_schedule() has working closure/cancel endpoints and never deletes a single account, with nothing anywhere saying so.
 - purge_expired_exports — stapel_gdpr.tasks.purge_expired_exports
@@ -31,6 +36,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Daily Celery task that purges ReRegistrationHash rows past their 24-month retention, skipping users under an active LegalHold. Wire it via get_gdpr_beat_schedule; without it expired hashes accumulate forever instead of aging out on schedule.
 - sweep_deletion_deadlines — stapel_gdpr.tasks.sweep_deletion_deadlines
   Hourly Celery task that flips deletion parts whose data owner never confirmed to TIMEOUT, keeping the closure out of DELETED and putting the silent owner's name in the log. Wire it via get_gdpr_beat_schedule; unwired, an owner's silence is indistinguishable from an owner still working.
+- sweep_dsar_deadlines — stapel_gdpr.tasks.sweep_dsar_deadlines
+  Daily Celery task that emits gdpr.dsar.overdue for every data-subject request past its acknowledgement (3 business days) or resolution (30 days) clock, once per deadline. Wire it via get_gdpr_beat_schedule; without it a missed statutory deadline is visible only to whoever opens the admin.
 - sweep_pending_exports — stapel_gdpr.tasks.sweep_pending_exports
   Hourly Celery task that force-assembles a partial archive for any export request whose 24h deadline passed (a service down mid-export, or one that never responded). Wire it via get_gdpr_beat_schedule; call directly only for an out-of-band admin sweep.
 ### predicate
@@ -40,14 +47,21 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 ### factory
 - compute_hash — stapel_gdpr.reregistration.compute_hash
   The low-level purpose-bound keyed HMAC underneath store_hashes/is_reregistration — normalizes then hashes one email-or-phone value. This is the ONE re-registration hash format in the fleet: the store lives in this library, so its format is defined here and every writer must go through store_hashes rather than hashing into the table itself (a plain SHA-256 of a normalized email is dictionary-recoverable). NOT exported in stapel_gdpr.__all__: call store_hashes or is_reregistration unless you are writing a one-off data migration that needs the exact same digest for an existing row.
+- declared_subprocessors — stapel_gdpr.subprocessors.declared_subprocessors
+  STAPEL_GDPR["SUBPROCESSORS"] resolved to (name, window_days) pairs, accepting both the bare-name and the {"name", "window_days"} forms. Read it instead of the raw setting when a host page or report needs to show which processors are declared and how long each one's window is.
 - get_gdpr_beat_schedule — stapel_gdpr.tasks.get_gdpr_beat_schedule
   instead of: hand-authored CELERY_BEAT_SCHEDULE crontab entries for GDPR sweeps
   Spread `**get_gdpr_beat_schedule()` into CELERY_BEAT_SCHEDULE to wire all four scheduled GDPR workers (export-deadline sweep, grace-period deletion, inactivity checker, retention cleanup) at once. Hand-authoring these four crontab entries yourself is how one gets silently dropped — most importantly process_expired_grace_periods, without which grace-period deletions never execute even though the API says a closure is scheduled.
+- record_subprocessor_obligations — stapel_gdpr.subprocessors.record_subprocessor_obligations
+  instead of: a log line recording the DPA deletion obligation, which no audit can query
+  Write the SubprocessorObligation rows for one erasure — one per processor in STAPEL_GDPR["SUBPROCESSORS"], each with the date its contractual window closes. The orchestrator calls it automatically when an erasure reaches DELETED; call it directly from a data owner whose slice went to a SUBSET of the processors, passing that subset. This is what ErasureRequest.fully_erased_by is computed from, so a product can say "erased from our systems on X, from every processor by Y".
 - store_hashes — stapel_gdpr.reregistration.store_hashes
   instead of: hand-rolled hashing of email/phone for post-deletion re-registration memory
   Persist re-registration hashes for a user about to be erased, in the one keyed-HMAC scheme this library defines (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls it before erasure runs; call it directly from any OTHER writer that wants a row in ReRegistrationHash — rows written around it are recorded as scheme='unverified', never match a lookup, and are reported by the gdpr.E004 system check.
 
 ## Extension points — what a product replaces, fork-free
+- ERASURE_AUTHORIZER [dotted_path]
+  Dotted path to authorize(request, subject_type, subject_key) -> bool, consulted by POST /erasures. Default (empty) is staff only: only the host knows whether this user owns that recording, and an ownership check that fails open is worse than none (guards.erasure_authorized, MODULE.md 'Deletion parts').
 - GDPR_PROVIDERS [dotted_path_list]
   Flat Django setting: list of GDPRProvider class paths loaded via import_string and registered into stapel_core.gdpr.gdpr_registry in apps.py ready() — no compile-time dependency on any service package (MODULE.md 'Deletion parts', apps.py:18-style registration).
 - deletion_parts [protocol]
@@ -58,7 +72,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 ## Fits with — fleet dependencies
 - stapel-core (required) — GDPRProvider registry (stapel_core.gdpr.gdpr_registry), comm bus (user.deletion_initiated/user.deleted emits, gdpr.section.erased consume), notifications request helper (pyproject.toml dependency; MODULE.md comm surface)
 
-## Error codes (51) — the StapelError envelope
+## Error codes (57) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -75,6 +89,8 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.field.null [400] fix_input {field}
 - error.400.field.required [400] fix_input {field}
 - error.400.field.unique [400] fix_input {field}
+- error.400.gdpr.unknown_dsar_kind [400] fix_input
+- error.400.gdpr.unknown_subject_type [400] fix_input
 - error.400.invalid_ad_id [400] fix_input
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify
@@ -83,10 +99,13 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.402.payment_required [402] retry
 - error.403.forbidden [403] retry
 - error.403.gdpr.account_closed [403] retry
+- error.403.gdpr.erasure_forbidden [403] contact_support
 - error.403.network_blocked [403] contact_support
 - error.403.verification_enrollment_required [403] verify
 - error.403.verification_required [403] verify
 - error.404.ad_not_found [404] retry
+- error.404.gdpr.dsar_not_found [404] retry
+- error.404.gdpr.erasure_not_found [404] retry
 - error.404.gdpr.export_not_found [404] retry
 - error.404.gdpr.no_active_closure [404] fix_input
 - error.404.not_found [404] retry
@@ -111,3 +130,4 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support
 - error.503.gdpr.closure_unavailable [503] retry
+- error.503.mandate_unavailable [503] retry

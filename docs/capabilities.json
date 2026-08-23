@@ -1,7 +1,7 @@
 {
   "module": "stapel-gdpr",
-  "version": "0.4.2",
-  "provides": "GDPR compliance: staged async data export (Art. 15/20) with status polling and download, account deletion with a cancellable grace period (Art. 17), inactivity closure, retention cleanup, LegalHold (blocks closure/deletion) and ReRegistrationHash, orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote services.",
+  "version": "0.5.0",
+  "provides": "GDPR compliance: staged async data export (Art. 15/20) with status polling and download; subject-scoped erasure (Art. 17) — account, workspace, meeting, recording, document, file — each proven by one receipt per data owner that claims the subject type, with a purge SLA, timeout sweep and a subprocessor ledger behind `fully_erased_by`; account closure keeps its cancellable 30-day grace and produces an ErasureRequest at grace end; DSAR intake (Art. 12) with automated acknowledgement and both statutory clocks; data-owner liveness probing; inactivity closure, retention cleanup, LegalHold and ReRegistrationHash; orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote owners.",
   "axes": [
     {
       "key": "REMOTE_DELETION_SERVICES",
@@ -13,20 +13,61 @@
         "co_gates": []
       },
       "curated": {
-        "summary": "Service names that must confirm erasure via a gdpr.section.erased comm action before a closure is marked deleted; one AccountDeletionPart is created per entry in execute_deletion (conf.py, MODULE.md Extension points table).",
+        "summary": "Legacy pre-registry list of service names that must confirm erasure via a gdpr.section.erased comm action before an erasure is marked deleted; folded into DATA_OWNERS as kind='remote' entries claiming the `account` subject, one ErasurePart per entry (conf.py, MODULE.md Extension points table).",
         "business_label": "Remote services that must confirm account erasure"
+      }
+    },
+    {
+      "key": "SUBJECT_TYPES",
+      "kind": "list",
+      "default": [
+        "account",
+        "workspace",
+        "meeting",
+        "recording",
+        "document",
+        "file"
+      ],
+      "group": "gdpr.erasure",
+      "gates": {
+        "operations": [],
+        "co_gates": []
+      },
+      "curated": {
+        "summary": "Subjects an erasure may be opened for. POST /erasures refuses a type outside this list (error.400.gdpr.unknown_subject_type), so a typo'd subject cannot become a request no owner can answer.",
+        "business_label": "What can be put on the deletion clock"
+      }
+    },
+    {
+      "key": "SUBPROCESSORS",
+      "kind": "list",
+      "default": [],
+      "group": "gdpr.erasure",
+      "gates": {
+        "operations": [],
+        "co_gates": []
+      },
+      "curated": {
+        "summary": "Third-party processors and their contractual deletion windows. One SubprocessorObligation row per entry is written when an erasure reaches DELETED; ErasureRequest.fully_erased_by is the max of our own due_at and those (subprocessors.py).",
+        "business_label": "Processors that also hold a copy, and how long they have"
       }
     }
   ],
   "required_settings": [
     {
       "key": "DATA_OWNERS",
-      "kind": "list",
-      "example": [
-        "auth",
-        "profiles"
-      ],
-      "why": "Every store that holds personal data. An erasure is only marked DELETED when every owner listed here returned a receipt, so an owner missing from this list is a store that silently keeps the user's data forever — and an EMPTY list is a deployment that cannot certify a single erasure.",
+      "kind": "map",
+      "example": {
+        "auth": [
+          "account"
+        ],
+        "recordings": [
+          "account",
+          "workspace",
+          "recording"
+        ]
+      },
+      "why": "Every store that holds personal data, and which subject types it holds it about. An erasure is only marked DELETED when every owner claiming that subject type returned a receipt, so an owner missing from this map is a store that silently keeps the data forever — and an EMPTY map is a deployment that cannot certify a single erasure. A plain list is still accepted and means [\"account\"] for every entry.",
       "unset_check": "gdpr.E001"
     },
     {
@@ -52,6 +93,11 @@
       "name": "serializer_seams",
       "kind": "class_override",
       "summary": "Every view subclasses GDPRAPIView (request_serializer_class/response_serializer_class + get_* getters); subclass and remount to reshape a response envelope (views.py:45-56, MODULE.md 'Serializer seams')."
+    },
+    {
+      "name": "ERASURE_AUTHORIZER",
+      "kind": "dotted_path",
+      "summary": "Dotted path to authorize(request, subject_type, subject_key) -> bool, consulted by POST /erasures. Default (empty) is staff only: only the host knows whether this user owns that recording, and an ownership check that fails open is worse than none (guards.erasure_authorized, MODULE.md 'Deletion parts')."
     }
   ],
   "surface": [
@@ -86,6 +132,21 @@
       ]
     },
     {
+      "name": "declared_subprocessors",
+      "kind": "factory",
+      "path": "stapel_gdpr.subprocessors.declared_subprocessors",
+      "intent": "STAPEL_GDPR[\"SUBPROCESSORS\"] resolved to (name, window_days) pairs, accepting both the bare-name and the {\"name\", \"window_days\"} forms. Read it instead of the raw setting when a host page or report needs to show which processors are declared and how long each one's window is."
+    },
+    {
+      "name": "record_subprocessor_obligations",
+      "kind": "factory",
+      "path": "stapel_gdpr.subprocessors.record_subprocessor_obligations",
+      "intent": "Write the SubprocessorObligation rows for one erasure — one per processor in STAPEL_GDPR[\"SUBPROCESSORS\"], each with the date its contractual window closes. The orchestrator calls it automatically when an erasure reaches DELETED; call it directly from a data owner whose slice went to a SUBSET of the processors, passing that subset. This is what ErasureRequest.fully_erased_by is computed from, so a product can say \"erased from our systems on X, from every processor by Y\".",
+      "instead_of": [
+        "a log line recording the DPA deletion obligation, which no audit can query"
+      ]
+    },
+    {
       "name": "check_inactive_accounts",
       "kind": "gate_function",
       "path": "stapel_gdpr.tasks.check_inactive_accounts",
@@ -107,10 +168,13 @@
       ]
     },
     {
-      "name": "notify_llm_providers_of_deletion",
+      "name": "probe_data_owners",
       "kind": "gate_function",
-      "path": "stapel_gdpr.tasks.notify_llm_providers_of_deletion",
-      "intent": "Call this from a custom GDPRProvider's delete()/anonymize() whenever that provider's data was ever sent to a third-party LLM provider, to leave an auditable log line of the DPA deletion obligation you still must action manually (this module does not call any LLM provider's API itself). Nothing in stapel-gdpr wires this automatically — it exists only to be called from your own provider, and an unwired one is silent by construction."
+      "path": "stapel_gdpr.tasks.probe_data_owners",
+      "intent": "Daily Celery task that asks every declared data owner to prove its erasure path is CONSUMED (owners answer gdpr.owner.alive from the same subscriber that handles gdpr.erasure.requested). Wire it via get_gdpr_beat_schedule: the answers fill DataOwnerHealth, which the gdpr.W006 boot check and GET /owners/health read. Unwired, an owner whose consumer process was never deployed is discoverable only by waiting for an erasure to time out.",
+      "instead_of": [
+        "a health endpoint per owner service, which proves a container is up and not that its erasure subscriber runs"
+      ]
     },
     {
       "name": "process_expired_grace_periods",
@@ -141,6 +205,12 @@
       "kind": "gate_function",
       "path": "stapel_gdpr.tasks.sweep_deletion_deadlines",
       "intent": "Hourly Celery task that flips deletion parts whose data owner never confirmed to TIMEOUT, keeping the closure out of DELETED and putting the silent owner's name in the log. Wire it via get_gdpr_beat_schedule; unwired, an owner's silence is indistinguishable from an owner still working."
+    },
+    {
+      "name": "sweep_dsar_deadlines",
+      "kind": "gate_function",
+      "path": "stapel_gdpr.tasks.sweep_dsar_deadlines",
+      "intent": "Daily Celery task that emits gdpr.dsar.overdue for every data-subject request past its acknowledgement (3 business days) or resolution (30 days) clock, once per deadline. Wire it via get_gdpr_beat_schedule; without it a missed statutory deadline is visible only to whoever opens the admin."
     },
     {
       "name": "sweep_pending_exports",
