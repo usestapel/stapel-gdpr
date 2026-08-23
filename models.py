@@ -267,15 +267,23 @@ class ErasureRequest(models.Model):
     #: Set for owners that partition their stores by workspace, so an owner
     #: can scope its delete without a lookup back into the host.
     workspace_id   = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    #: Who asked. Null for erasures the platform started by itself.
     requested_by   = models.UUIDField(null=True, blank=True, db_index=True)
+    #: Why this erasure exists — a user action, a DSAR, inactivity, a backup
+    #: restore, or an administrator.
     origin         = models.CharField(max_length=20, choices=ORIGIN_CHOICES, default=ORIGIN_USER)
+    #: When the clock started.
     requested_at   = models.DateTimeField(default=timezone.now, db_index=True)
     #: Only the account has a cancellable grace: the UI removal of an entity
     #: already happened, so its clock is a purge SLA, not a waiting period.
     grace_ends_at  = models.DateTimeField(null=True, blank=True)
+    #: requested_at + ERASURE_SLA_DAYS: when our own systems must be clean.
     due_at         = models.DateTimeField()
+    #: QUEUED (recorded) -> ERASING (owners asked) -> DELETED | TIMEOUT.
     state          = models.CharField(max_length=20, choices=STATE_CHOICES, default=STATE_QUEUED, db_index=True)
+    #: When every claiming owner's receipt was in. Null while open.
     completed_at   = models.DateTimeField(null=True, blank=True)
+    #: The comm correlation key owners echo back in gdpr.section.erased.
     correlation_id = models.CharField(max_length=36, unique=True, null=True, blank=True, db_index=True)
     #: Which data-owner inventory this erasure was judged by.
     registry_version = models.CharField(max_length=64, blank=True, default='')
@@ -298,6 +306,7 @@ class ErasureRequest(models.Model):
     #: The backup timestamp that motivated a re-queue — kept for the audit
     #: trail ("this data came back on ...").
     restored_from  = models.DateTimeField(null=True, blank=True)
+    #: Free text for an operator: why this request was opened by hand.
     note           = models.TextField(blank=True, default='')
 
     class Meta:
@@ -374,19 +383,26 @@ class ErasurePart(models.Model):
         (KIND_REMOTE, 'Remote service'),
     ]
 
+    #: The erasure this receipt slot belongs to.
     request      = models.ForeignKey(ErasureRequest, on_delete=models.CASCADE, related_name='parts')
+    #: The declared data owner expected to erase its slice.
     owner        = models.CharField(max_length=50)
+    #: PENDING until a receipt arrives; anything else than DONE blocks the
+    #: request from being certified.
     state        = models.CharField(max_length=20, choices=STATE_CHOICES, default=STATE_PENDING)
+    #: Whether the owner runs in this process or confirms over comm.
     kind         = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_REMOTE)
     # The durable receipt: an opaque id the owner returns with its
     # confirmation. A DONE part without one is an assumption, not evidence.
     receipt_id   = models.CharField(max_length=128, blank=True, default='')
+    #: When the receipt landed.
     receipt_at   = models.DateTimeField(null=True, blank=True)
     # What the owner reported having removed, by its own count.
     counts       = models.JSONField(default=dict, blank=True)
     # Past this, the part is swept to TIMEOUT — which blocks DELETED exactly
     # like a failure does. Silence is not consent.
     deadline     = models.DateTimeField(null=True, blank=True)
+    #: Why this part is not DONE — a timeout, or the owner's own error text.
     note         = models.TextField(blank=True, default='')
 
     class Meta:
@@ -413,8 +429,12 @@ class DataOwnerHealth(models.Model):
     all, and nothing said so until an erasure timed out.
     """
 
+    #: The declared data owner this row is about.
     owner                   = models.CharField(max_length=50, unique=True)
+    #: Last gdpr.owner.alive answer. Null means it has never answered one.
     last_alive_at           = models.DateTimeField(null=True, blank=True)
+    #: Last time we asked — so "never answered" is distinguishable from
+    #: "was never asked because the probe task is not wired".
     last_probe_at           = models.DateTimeField(null=True, blank=True)
     #: What the registry says this owner claims, at the last probe.
     declared_subject_types  = models.JSONField(default=list, blank=True)
@@ -449,12 +469,20 @@ class SubprocessorObligation(models.Model):
         (STATE_OVERDUE,   'Window closed without confirmation'),
     ]
 
+    #: The erasure whose data this processor also holds a copy of.
     request      = models.ForeignKey(ErasureRequest, on_delete=models.CASCADE, related_name='obligations')
+    #: Processor name, as declared in STAPEL_GDPR["SUBPROCESSORS"].
     provider     = models.CharField(max_length=64)
+    #: Its contractual window, in days from our own completion.
     window_days  = models.PositiveIntegerField(default=0)
+    #: When the obligation was written down.
     recorded_at  = models.DateTimeField(default=timezone.now)
+    #: completed_at + window_days: when this processor's copy must be gone.
     due_at       = models.DateTimeField()
+    #: PENDING until the processor confirms; OVERDUE once the window closed
+    #: with no confirmation.
     state        = models.CharField(max_length=20, choices=STATE_CHOICES, default=STATE_PENDING)
+    #: How the confirmation was obtained, for the audit trail.
     note         = models.TextField(blank=True, default='')
 
     class Meta:
@@ -532,28 +560,42 @@ class DsarRequest(models.Model):
     #: Resolution deadline, in calendar days (Art. 12(3)).
     RESOLVE_DAYS = 30
 
+    #: Which right is being exercised (Art. 15/16/17/20).
     kind            = models.CharField(max_length=20, choices=KIND_CHOICES)
+    #: How the request arrived — in-app, the public form, or transcribed
+    #: from email by staff.
     channel         = models.CharField(max_length=10, choices=CHANNEL_CHOICES, default=CHANNEL_APP)
+    #: Where the acknowledgement goes and, for a form submission, the only
+    #: identifier we have until staff match it to an account.
     subject_email   = models.EmailField()
     #: Set when the requester is a known account; null for the public form
     #: until staff match the request to a person.
     user_id         = models.UUIDField(null=True, blank=True, db_index=True)
+    #: When the request arrived — both clocks are measured from here.
     received_at     = models.DateTimeField(default=timezone.now, db_index=True)
+    #: received_at + three business days (Art. 12(3) practice).
     ack_due_at      = models.DateTimeField()
     #: When the automated acknowledgement went out — the proof the 3-day
     #: clock was met, rather than an assumption that mail is sent somewhere.
     ack_sent_at     = models.DateTimeField(null=True, blank=True)
+    #: received_at + thirty days (Art. 12(3)).
     resolve_due_at  = models.DateTimeField()
+    #: The erasure this request set in motion, once one exists.
     erasure_request = models.ForeignKey(
         ErasureRequest, on_delete=models.SET_NULL,
         related_name='dsar_requests', null=True, blank=True,
     )
+    #: The data export this request set in motion, if any.
     export_request  = models.ForeignKey(
         DataExportRequest, on_delete=models.SET_NULL,
         related_name='dsar_requests', null=True, blank=True,
     )
+    #: RECEIVED -> ACKNOWLEDGED -> IN_PROGRESS -> RESOLVED | REJECTED.
     state           = models.CharField(max_length=20, choices=STATE_CHOICES, default=STATE_RECEIVED, db_index=True)
+    #: What the subject asked for, plus staff notes and automation outcomes.
     note            = models.TextField(blank=True, default='')
+    #: Idempotency mark for sweep_dsar_deadlines, so one missed deadline is
+    #: not re-announced every day until somebody acts on it.
     overdue_notified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
