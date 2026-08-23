@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.erasure.timeout",
+  "description": "At least one owner did not confirm erasure before its deadline, so the request is TIMEOUT and cannot be certified. Subscribe to alert: an owner's silence is a compliance finding, not a log line.",
+  "type": "object",
+  "required": ["request_id", "correlation_id", "subject_type", "subject_key", "owners"],
+  "properties": {
+    "request_id":     { "type": "integer" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "subject_type":   { "type": "string" },
+    "subject_key":    { "type": "string" },
+    "owners":         { "type": "array", "items": { "type": "string" } },
+    "due_at":         { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

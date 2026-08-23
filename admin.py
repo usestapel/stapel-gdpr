@@ -4,10 +4,14 @@ from stapel_core.django.admin.base import StapelModelAdmin
 
 from .models import (
     AccountClosureRequest,
-    AccountDeletionPart,
     DataExportRequest,
+    DataOwnerHealth,
+    DsarRequest,
+    ErasurePart,
+    ErasureRequest,
     LegalHold,
     ReRegistrationHash,
+    SubprocessorObligation,
 )
 
 # Category notes (AS-5 / docs/admin-suite.md):
@@ -16,16 +20,22 @@ from .models import (
 #   hold (setting ``released_at``) is a legitimate, expected staff workflow
 #   through this exact admin — see MODULE.md "Placing/releasing legal holds
 #   -> LegalHold ORM/admin".
-# - AccountClosureRequest / AccountDeletionPart / DataExportRequest /
-#   DataExportPart / ReRegistrationHash are all ``@access.ops``: their state
-#   machines are owned entirely by ``GDPROrchestrator`` / scheduled tasks.
-#   MODULE.md is explicit — "Do not flip AccountClosureRequest.status or
-#   AccountDeletionPart rows directly" — and there is no staff-facing
-#   cancel/approve/override action anywhere in views.py or admin.py; closure
-#   cancellation is user-initiated only (AccountCancelCloseView, keyed off
-#   the authenticated requester). Hand-editing any of these rows through the
-#   admin (status, tokens, archive paths, completion flags) would desync the
-#   state machine from the orchestrator's bookkeeping.
+# - AccountClosureRequest / ErasureRequest / ErasurePart / DataExportRequest /
+#   DataExportPart / DataOwnerHealth / SubprocessorObligation /
+#   ReRegistrationHash are all ``@access.ops``: their state machines are owned
+#   entirely by ``GDPROrchestrator`` / scheduled tasks. MODULE.md is explicit —
+#   "Do not flip AccountClosureRequest.status or ErasurePart rows directly" —
+#   and there is no staff-facing cancel/approve/override action anywhere in
+#   views.py or admin.py; closure cancellation is user-initiated only
+#   (AccountCancelCloseView, keyed off the authenticated requester).
+#   Hand-editing any of these rows through the admin (status, tokens, archive
+#   paths, completion flags) would desync the state machine from the
+#   orchestrator's bookkeeping.
+# - DsarRequest is the exception among the new models and is deliberately NOT
+#   ``@access.ops``: triaging a data-subject request (state, note, matching it
+#   to an account) IS the staff workflow, and the module ships an authenticated
+#   PATCH endpoint for exactly that. The admin is the same workflow by another
+#   door, so it stays a business model.
 
 
 @admin.register(LegalHold)
@@ -36,13 +46,41 @@ class LegalHoldAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at',)
 
 
-class AccountDeletionPartInline(admin.TabularInline):
-    model = AccountDeletionPart
+class ErasurePartInline(admin.TabularInline):
+    model = ErasurePart
     extra = 0
-    readonly_fields = ('service', 'status', 'completed_at', 'error')
-    # No has_add/change/delete_permission overrides needed here: AccountDeletionPart
+    readonly_fields = ('owner', 'state', 'kind', 'receipt_id', 'receipt_at', 'deadline', 'note')
+    # No has_add/change/delete_permission overrides needed here: ErasurePart
     # is declared @access.ops, so MandateBackend already forbids add/change/delete
     # on it (even for a superuser) at the permission layer the inline consults.
+
+
+class SubprocessorObligationInline(admin.TabularInline):
+    model = SubprocessorObligation
+    extra = 0
+    readonly_fields = ('provider', 'window_days', 'recorded_at', 'due_at', 'state', 'note')
+
+
+@admin.register(ErasureRequest)
+class ErasureRequestAdmin(StapelModelAdmin):
+    list_display = ('subject_type', 'subject_key', 'state', 'origin', 'requested_at', 'due_at', 'completed_at')
+    list_filter  = ('state', 'subject_type', 'origin')
+    search_fields = ('subject_key', 'correlation_id', 'workspace_id')
+    inlines = [ErasurePartInline, SubprocessorObligationInline]
+
+
+@admin.register(DataOwnerHealth)
+class DataOwnerHealthAdmin(StapelModelAdmin):
+    list_display = ('owner', 'last_alive_at', 'last_probe_at', 'declared_subject_types', 'answered_subject_types')
+    search_fields = ('owner',)
+
+
+@admin.register(DsarRequest)
+class DsarRequestAdmin(admin.ModelAdmin):
+    list_display = ('kind', 'channel', 'subject_email', 'state', 'received_at', 'ack_due_at', 'ack_sent_at', 'resolve_due_at')
+    list_filter  = ('state', 'kind', 'channel')
+    search_fields = ('subject_email', 'user_id', 'note')
+    readonly_fields = ('received_at', 'ack_due_at', 'resolve_due_at', 'ack_sent_at')
 
 
 @admin.register(AccountClosureRequest)
@@ -50,7 +88,6 @@ class AccountClosureRequestAdmin(StapelModelAdmin):
     list_display = ('user_id', 'trigger', 'status', 'initiated_at', 'grace_ends_at', 'deleted_at')
     list_filter  = ('status', 'trigger')
     search_fields = ('user_id', 'correlation_id')
-    inlines = [AccountDeletionPartInline]
 
 
 @admin.register(DataExportRequest)

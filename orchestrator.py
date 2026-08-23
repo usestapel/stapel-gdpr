@@ -28,12 +28,13 @@ from . import lifecycle
 from .conf import gdpr_settings
 from .models import (
     AccountClosureRequest,
-    AccountDeletionPart,
     DataExportPart,
     DataExportRequest,
+    ErasurePart,
+    ErasureRequest,
     LegalHold,
 )
-from .owners import data_owner_report
+from .owners import SUBJECT_ACCOUNT, data_owner_report, subject_types
 
 logger = logging.getLogger(__name__)
 
@@ -525,9 +526,10 @@ class GDPROrchestrator:
         DELETED only when every local provider actually succeeded — a
         swallowed provider crash must not be recorded as a completed erasure.
 
-        Every declared data owner (STAPEL_GDPR["DATA_OWNERS"], plus the legacy
-        REMOTE_DELETION_SERVICES) gets an AccountDeletionPart and must produce
-        a durable receipt: local owners when their provider returns, remote
+        Every declared data owner claiming the ``account`` subject
+        (STAPEL_GDPR["DATA_OWNERS"], plus the legacy
+        REMOTE_DELETION_SERVICES) gets an ErasurePart and must produce a
+        durable receipt: local owners when their provider returns, remote
         owners by confirming with a ``gdpr.section.erased`` action carrying
         this closure's correlation_id. The closure flips to DELETED only when
         the registry itself is trustworthy AND every part carries a receipt
@@ -557,16 +559,34 @@ class GDPROrchestrator:
         user_id        = closure.user_id
         correlation_id = closure.correlation_id
 
-        # One receipt slot per declared owner — the ledger the DELETED flip
-        # is checked against.
-        self._ensure_deletion_parts(closure, registry)
+        # The account is one subject among several. Its erasure request is
+        # created here, at grace end — the closure keeps owning the
+        # cancellable grace, the ErasureRequest owns the receipts ledger the
+        # DELETED flip is checked against, exactly as it does for an entity.
+        # execute_deletion is re-entrant by design (the grace sweep retries a
+        # closure left in DELETING), so an existing request for this closure
+        # is reused rather than duplicated — its correlation_id is unique and
+        # its parts are the receipts already collected.
+        erasure = ErasureRequest.objects.filter(correlation_id=correlation_id).first()
+        if erasure is None:
+            erasure = self.request_erasure(
+                SUBJECT_ACCOUNT,
+                str(user_id),
+                requested_by=user_id,
+                origin=(ErasureRequest.ORIGIN_INACTIVITY
+                        if closure.trigger == AccountClosureRequest.TRIGGER_INACTIVITY
+                        else ErasureRequest.ORIGIN_USER),
+                correlation_id=correlation_id,
+                closure=closure,
+                grace_ends_at=closure.grace_ends_at,
+            )
 
         # Re-registration hashes must be captured BEFORE erasure destroys
         # the identifiers.
         self._store_reregistration_hashes(user_id)
 
         failed = self._run_deletion_inprocess(user_id)
-        self._record_local_receipts(closure, registry, failed)
+        self._record_local_receipts(erasure, registry, failed)
 
         if failed:
             logger.error(
@@ -596,6 +616,10 @@ class GDPROrchestrator:
         with mutate_and_emit() as emit:
             closure.local_erasure_done = True
             closure.save(update_fields=['local_erasure_done'])
+            # DEPRECATED, removed in 0.6.0: `gdpr.erasure.requested` already
+            # went out when the erasure was created and carries the subject
+            # pair this event cannot express. It keeps firing for one minor
+            # so a fleet mid-upgrade never has an owner listening to nothing.
             emit(
                 'user.deleted',
                 {
@@ -606,117 +630,237 @@ class GDPROrchestrator:
                 key=str(user_id),
             )
 
-        self._maybe_finalize(closure)
+        self._maybe_finalize(erasure)
 
-    def mark_section_erased(self, correlation_id: str, service: str, receipt_id: str = '') -> None:
-        """Called when a remote service confirms erasure via gdpr.section.erased.
+    # -------------------------------------------------------------------------
+    # Subject-scoped erasure
+    # -------------------------------------------------------------------------
 
-        An unknown service is NOT accepted as a receipt: a confirmation from
-        a name nobody declared proves nothing about the owners that were.
+    def request_erasure(
+        self,
+        subject_type: str,
+        subject_key: str,
+        *,
+        workspace_id: str | None = None,
+        requested_by: UserId | None = None,
+        origin: str = ErasureRequest.ORIGIN_USER,
+        correlation_id: str | None = None,
+        closure: AccountClosureRequest | None = None,
+        grace_ends_at=None,
+        source_request: ErasureRequest | None = None,
+        restored_from=None,
+        note: str = '',
+    ) -> ErasureRequest:
+        """Open an erasure for one subject and dispatch it to its owners.
+
+        The same call for an account, a workspace, a meeting, a recording, a
+        document or a file: the row, one receipt slot per owner that claims
+        this subject type, and one ``gdpr.erasure.requested`` action — as one
+        outbox unit, so an erasure consumers were never told about cannot
+        exist. Owners that do not claim the type get no part and therefore
+        never block it (a recording waits for recordings and media, not for
+        billing).
+
+        Raises ``ValueError('unknown_subject_type')`` for a type outside
+        ``STAPEL_GDPR["SUBJECT_TYPES"]`` — a typo'd subject would otherwise
+        produce a request no owner can ever answer, which looks exactly like
+        an owner that went silent.
         """
-        closure = AccountClosureRequest.objects.filter(correlation_id=correlation_id).first()
-        if closure is None:
-            logger.warning('gdpr.section.erased for unknown correlation_id=%s service=%s',
+        if subject_type not in subject_types():
+            raise ValueError('unknown_subject_type')
+
+        from stapel_core.comm import mutate_and_emit
+
+        registry = data_owner_report()
+        claiming = registry.owners_for(subject_type)
+        now = timezone.now()
+
+        with mutate_and_emit() as emit:
+            request = ErasureRequest.objects.create(
+                subject_type=subject_type,
+                subject_key=str(subject_key),
+                workspace_id=str(workspace_id) if workspace_id else None,
+                requested_by=requested_by,
+                origin=origin,
+                requested_at=now,
+                grace_ends_at=grace_ends_at,
+                correlation_id=correlation_id or str(uuid_lib.uuid4()),
+                registry_version=registry.version,
+                state=ErasureRequest.STATE_ERASING,
+                closure=closure,
+                source_request=source_request,
+                restored_from=restored_from,
+                note=note,
+            )
+            ErasurePart.objects.bulk_create([
+                ErasurePart(
+                    request=request,
+                    owner=owner.name,
+                    kind=(ErasurePart.KIND_LOCAL if owner.is_local
+                          else ErasurePart.KIND_REMOTE),
+                    deadline=now + owner.timeout,
+                )
+                for owner in claiming
+            ])
+            emit(
+                'gdpr.erasure.requested',
+                {
+                    'request_id': request.pk,
+                    'correlation_id': request.correlation_id,
+                    'subject_type': request.subject_type,
+                    'subject_key': request.subject_key,
+                    'workspace_id': request.workspace_id or '',
+                    'requested_by': str(requested_by) if requested_by else '',
+                    'origin': request.origin,
+                    'due_at': request.due_at.isoformat(),
+                },
+                key=request.correlation_id,
+            )
+        logger.info(
+            'GDPR erasure requested [correlation=%s subject=%s:%s owners=%s]',
+            request.correlation_id, subject_type, subject_key,
+            [o.name for o in claiming],
+        )
+        return request
+
+    def mark_section_erased(
+        self,
+        correlation_id: str,
+        service: str,
+        receipt_id: str = '',
+        counts: dict | None = None,
+    ) -> None:
+        """Called when an owner confirms erasure via gdpr.section.erased.
+
+        An unknown owner is NOT accepted as a receipt: a confirmation from a
+        name nobody declared proves nothing about the owners that were.
+        """
+        request = ErasureRequest.objects.filter(correlation_id=correlation_id).first()
+        if request is None:
+            logger.warning('gdpr.section.erased for unknown correlation_id=%s owner=%s',
                            correlation_id, service)
             return
 
-        updated = AccountDeletionPart.objects.filter(
-            closure=closure, service=service,
-        ).exclude(status=AccountDeletionPart.STATUS_DONE).update(
-            status=AccountDeletionPart.STATUS_DONE,
+        updated = ErasurePart.objects.filter(
+            request=request, owner=service,
+        ).exclude(state=ErasurePart.STATE_DONE).update(
+            state=ErasurePart.STATE_DONE,
             receipt_id=receipt_id or f'{service}:{correlation_id}',
-            completed_at=timezone.now(),
+            receipt_at=timezone.now(),
+            counts=counts or {},
         )
         if not updated:
-            logger.debug('GDPR deletion part already done or unknown [correlation=%s service=%s]',
+            logger.debug('GDPR erasure part already done or unknown [correlation=%s owner=%s]',
                          correlation_id, service)
             return
 
-        closure.refresh_from_db()
-        self._maybe_finalize(closure)
+        request.refresh_from_db()
+        self._maybe_finalize(request)
 
-    def _ensure_deletion_parts(self, closure: AccountClosureRequest, registry) -> None:
-        """One receipt slot per declared owner, with its own timeout clock."""
-        now = timezone.now()
-        for owner in registry.owners:
-            AccountDeletionPart.objects.get_or_create(
-                closure=closure,
-                service=owner.name,
-                defaults={
-                    'kind': (AccountDeletionPart.KIND_LOCAL if owner.is_local
-                             else AccountDeletionPart.KIND_REMOTE),
-                    'deadline': now + owner.timeout,
-                },
-            )
-
-    def _record_local_receipts(self, closure: AccountClosureRequest, registry,
+    def _record_local_receipts(self, request: ErasureRequest, registry,
                                failed: list[str]) -> None:
         """Write a receipt for every local owner whose provider actually ran.
 
         An owner declared local but never registered has no provider to run,
         so it gets no receipt — silence must not be mistaken for success.
         """
-        for owner in registry.owners:
+        for owner in registry.owners_for(request.subject_type):
             if not owner.is_local or owner.name in failed or owner.name in registry.missing:
                 continue
-            part = closure.parts.filter(service=owner.name).first()
-            if part and part.status != AccountDeletionPart.STATUS_DONE:
+            part = request.parts.filter(owner=owner.name).first()
+            if part and part.state != ErasurePart.STATE_DONE:
                 part.record_receipt()
 
-    def _maybe_finalize(self, closure: AccountClosureRequest) -> None:
-        """Flip the closure to DELETED only against a full set of receipts.
+    def _maybe_finalize(self, request: ErasureRequest) -> None:
+        """Flip the erasure to DELETED only against a full set of receipts.
 
-        Fails CLOSED, and that is the point: the previous version finalized
-        as soon as the local providers returned and the (empty)
-        REMOTE_DELETION_SERVICES list was vacuously satisfied, so a
-        deployment with one registered provider marked accounts DELETED
-        while every other store kept the data. Now the closure stays in
-        DELETING — visible, retryable, and honest — until every declared
-        owner produced a receipt against a registry that is itself sound.
-        The named override is ``ALLOW_ERASURE_WITHOUT_RECEIPTS``.
+        Fails CLOSED, and that is the point: the pre-registry version
+        finalized as soon as the local providers returned and the (empty)
+        remote list was vacuously satisfied, so a deployment with one
+        registered provider marked accounts DELETED while every other store
+        kept the data. The request stays ERASING — visible, retryable, and
+        honest — until every claiming owner produced a receipt against a
+        registry that is itself sound. The named override is
+        ``ALLOW_ERASURE_WITHOUT_RECEIPTS``.
         """
-        if closure.status != AccountClosureRequest.STATUS_DELETING:
-            return
-        if not closure.local_erasure_done:
-            return
-        if not closure.identity_erased_at:
-            # Not waivable by ALLOW_ERASURE_WITHOUT_RECEIPTS: that hatch is
-            # about owners this deployment cannot reach, whereas the primary
-            # user row is always reachable — a surviving one means the
-            # erasure did not run, not that it could not.
-            logger.warning(
-                'GDPR closure has no erased primary identity, staying DELETING '
-                '[user=%s correlation=%s]', closure.user_id, closure.correlation_id,
-            )
+        if request.state not in (ErasureRequest.STATE_QUEUED, ErasureRequest.STATE_ERASING):
             return
 
-        blockers = list(data_owner_report().problems)
-        unreceipted = closure.unreceipted_owners
+        closure = request.closure
+        if closure is not None:
+            if closure.status != AccountClosureRequest.STATUS_DELETING:
+                return
+            if not closure.local_erasure_done:
+                return
+            if not closure.identity_erased_at:
+                # Not waivable by ALLOW_ERASURE_WITHOUT_RECEIPTS: that hatch
+                # is about owners this deployment cannot reach, whereas the
+                # primary user row is always reachable — a surviving one
+                # means the erasure did not run, not that it could not.
+                logger.warning(
+                    'GDPR closure has no erased primary identity, staying DELETING '
+                    '[user=%s correlation=%s]', closure.user_id, closure.correlation_id,
+                )
+                return
+
+        registry = data_owner_report()
+        blockers = list(registry.problems)
+        if not registry.owners_for(request.subject_type):
+            # An erasure nobody was asked to perform must not report itself
+            # complete; the inventory is what is wrong, and it says so here.
+            blockers.append(
+                f'no declared data owner claims subject_type={request.subject_type!r}'
+            )
+        unreceipted = request.unreceipted_owners
         if unreceipted:
-            blockers.append(f'owners without a deletion receipt: {", ".join(unreceipted)}')
+            blockers.append(f'owners without an erasure receipt: {", ".join(unreceipted)}')
 
         waived = False
         if blockers:
             if not gdpr_settings.ALLOW_ERASURE_WITHOUT_RECEIPTS:
                 logger.warning(
-                    'GDPR erasure not certifiable, closure stays DELETING '
-                    '[user=%s correlation=%s]: %s',
-                    closure.user_id, closure.correlation_id, '; '.join(blockers),
+                    'GDPR erasure not certifiable, request stays %s '
+                    '[subject=%s:%s correlation=%s]: %s',
+                    request.state, request.subject_type, request.subject_key,
+                    request.correlation_id, '; '.join(blockers),
                 )
                 return
             waived = True
             logger.error(
-                'GDPR closure marked DELETED without full receipts '
-                '(ALLOW_ERASURE_WITHOUT_RECEIPTS is on) [user=%s correlation=%s]: %s',
-                closure.user_id, closure.correlation_id, '; '.join(blockers),
+                'GDPR erasure marked DELETED without full receipts '
+                '(ALLOW_ERASURE_WITHOUT_RECEIPTS is on) [subject=%s:%s correlation=%s]: %s',
+                request.subject_type, request.subject_key, request.correlation_id,
+                '; '.join(blockers),
             )
 
-        closure.status              = AccountClosureRequest.STATUS_DELETED
-        closure.deleted_at          = timezone.now()
-        closure.completeness_waived = waived
-        closure.save(update_fields=['status', 'deleted_at', 'completeness_waived'])
-        logger.info('GDPR account deletion completed [user=%s correlation=%s registry=%s waived=%s]',
-                    closure.user_id, closure.correlation_id, closure.registry_version, waived)
+        completed_at = timezone.now()
+        request.state               = ErasureRequest.STATE_DELETED
+        request.completed_at        = completed_at
+        request.completeness_waived = waived
+        request.save(update_fields=['state', 'completed_at', 'completeness_waived'])
+
+        # The processors' windows open the moment our own systems are clean:
+        # an obligation recorded here is what `fully_erased_by` is computed
+        # from, so the product can name both dates instead of one.
+        from .subprocessors import record_subprocessor_obligations
+
+        record_subprocessor_obligations(request)
+
+        if closure is not None:
+            closure.status              = AccountClosureRequest.STATUS_DELETED
+            closure.deleted_at          = completed_at
+            closure.completeness_waived = waived
+            closure.save(update_fields=['status', 'deleted_at', 'completeness_waived'])
+            logger.info(
+                'GDPR account deletion completed [user=%s correlation=%s registry=%s waived=%s]',
+                closure.user_id, closure.correlation_id, closure.registry_version, waived,
+            )
+        else:
+            logger.info(
+                'GDPR erasure completed [subject=%s:%s correlation=%s registry=%s waived=%s]',
+                request.subject_type, request.subject_key, request.correlation_id,
+                request.registry_version, waived,
+            )
 
     def _store_reregistration_hashes(self, user_id: UserId) -> None:
         """Persist salted hashes of the user's identifiers before erasure."""
@@ -774,24 +918,107 @@ class GDPROrchestrator:
         return failed
 
     def sweep_deletion_deadlines(self) -> int:
-        """Mark overdue deletion parts TIMED OUT. Returns how many.
+        """Mark overdue erasure parts TIMED OUT. Returns how many.
 
         A silent owner is not a finished owner: the part flips to TIMEOUT,
-        which keeps blocking DELETED and puts the name in the logs instead of
-        letting the closure quietly complete around it.
+        which keeps blocking DELETED — and the request it belongs to flips
+        too, with a ``gdpr.erasure.timeout`` action, so a host can alert.
+        Silence used to die in a log line nobody read.
         """
-        overdue = AccountDeletionPart.objects.filter(
-            status=AccountDeletionPart.STATUS_PENDING,
+        from stapel_core.comm import mutate_and_emit
+
+        overdue = ErasurePart.objects.filter(
+            state=ErasurePart.STATE_PENDING,
             deadline__lte=timezone.now(),
         )
-        names = list(overdue.values_list('closure_id', 'service'))
+        affected = list(overdue.values_list('request_id', 'owner'))
         count = overdue.update(
-            status=AccountDeletionPart.STATUS_TIMEOUT,
-            error='owner did not confirm erasure before its deadline',
+            state=ErasurePart.STATE_TIMEOUT,
+            note='owner did not confirm erasure before its deadline',
         )
-        for closure_id, service in names:
-            logger.error('GDPR deletion part timed out [closure=%s owner=%s]', closure_id, service)
+        if not count:
+            return 0
+
+        for request_id, owner in affected:
+            logger.error('GDPR erasure part timed out [request=%s owner=%s]', request_id, owner)
+
+        for request in ErasureRequest.objects.filter(
+            pk__in={request_id for request_id, _ in affected},
+        ).exclude(state__in=[ErasureRequest.STATE_DELETED, ErasureRequest.STATE_TIMEOUT]):
+            silent = sorted(
+                owner for request_id, owner in affected if request_id == request.pk
+            )
+            with mutate_and_emit() as emit:
+                request.state = ErasureRequest.STATE_TIMEOUT
+                request.save(update_fields=['state'])
+                emit(
+                    'gdpr.erasure.timeout',
+                    {
+                        'request_id': request.pk,
+                        'correlation_id': request.correlation_id,
+                        'subject_type': request.subject_type,
+                        'subject_key': request.subject_key,
+                        'owners': silent,
+                        'due_at': request.due_at.isoformat(),
+                    },
+                    key=request.correlation_id,
+                )
         return count
+
+    # -------------------------------------------------------------------------
+    # Owner liveness
+    # -------------------------------------------------------------------------
+
+    def probe_data_owners(self) -> str:
+        """Ask every declared owner to prove its erasure path is consumed.
+
+        Returns the probe's correlation id. Owners answer
+        ``gdpr.owner.alive`` from the *same* subscriber that handles
+        erasure, so an answer is evidence the consumer runs — not that a
+        container is deployed.
+        """
+        from stapel_core.comm import mutate_and_emit
+
+        from .models import DataOwnerHealth
+
+        registry = data_owner_report()
+        correlation_id = str(uuid_lib.uuid4())
+        now = timezone.now()
+
+        with mutate_and_emit() as emit:
+            for owner in registry.owners:
+                DataOwnerHealth.objects.update_or_create(
+                    owner=owner.name,
+                    defaults={
+                        'last_probe_at': now,
+                        'declared_subject_types': list(owner.subjects),
+                    },
+                )
+            emit(
+                'gdpr.owner.probe',
+                {'correlation_id': correlation_id},
+                key=correlation_id,
+            )
+        logger.info('GDPR owner probe sent [correlation=%s owners=%s]',
+                    correlation_id, list(registry.names))
+        return correlation_id
+
+    def record_owner_alive(self, owner: str, subject_types_answered: list[str]) -> None:
+        """Store an owner's ``gdpr.owner.alive`` answer."""
+        from .models import DataOwnerHealth
+
+        declared = data_owner_report().owner(owner)
+        DataOwnerHealth.objects.update_or_create(
+            owner=owner,
+            defaults={
+                'last_alive_at': timezone.now(),
+                'answered_subject_types': list(subject_types_answered or []),
+                **(
+                    {'declared_subject_types': list(declared.subjects)}
+                    if declared is not None else {}
+                ),
+            },
+        )
 
 
 gdpr_orchestrator = GDPROrchestrator()

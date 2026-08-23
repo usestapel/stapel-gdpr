@@ -228,10 +228,25 @@ class TestDeletionBranches:
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_DELETING  # cdn missing
 
-    def test_maybe_finalize_ignores_non_deleting_closure(self, user):
+    def test_maybe_finalize_ignores_non_deleting_closure(self, settings, user, fake_provider):
+        """An account erasure is gated on its closure, not only on receipts.
+
+        The closure is still in GRACE — cancellable — so however complete the
+        receipts are, nothing may be declared erased.
+        """
+        from stapel_gdpr.models import ErasureRequest
+
         closure = gdpr_orchestrator.initiate_closure(user.pk)
-        gdpr_orchestrator._maybe_finalize(closure)
+        erasure = gdpr_orchestrator.request_erasure(
+            "account", str(user.pk), requested_by=user.pk, closure=closure,
+        )
+        erasure.parts.all().update(state="done", receipt_id="r")
+
+        gdpr_orchestrator._maybe_finalize(erasure)
+
+        erasure.refresh_from_db()
         closure.refresh_from_db()
+        assert erasure.state == ErasureRequest.STATE_ERASING
         assert closure.status == AccountClosureRequest.STATUS_GRACE
 
     def test_store_hashes_missing_user_is_noop(self, db):

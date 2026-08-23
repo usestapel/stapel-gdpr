@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from stapel_gdpr.models import (
     AccountClosureRequest,
-    AccountDeletionPart,
+    ErasurePart,
     LegalHold,
     ReRegistrationHash,
 )
@@ -116,7 +116,7 @@ class TestRemoteDeletionParts:
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_DELETING
         assert closure.local_erasure_done is True
-        assert set(closure.parts.values_list("service", flat=True)) == {"profiles", "cdn"}
+        assert set(closure.erasure.parts.values_list("owner", flat=True)) == {"profiles", "cdn"}
 
         # Remote services confirm via the comm action our subscriber handles
         from stapel_core.comm import emit
@@ -136,12 +136,11 @@ class TestRemoteDeletionParts:
         })
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_DELETED
-        assert closure.parts.filter(
-            status=AccountDeletionPart.STATUS_DONE,
-        ).count() == 2
+        erasure = closure.erasure
+        assert erasure.parts.filter(state=ErasurePart.STATE_DONE).count() == 2
         # Every DONE part carries a durable receipt — the evidence the
         # DELETED flip is now checked against.
-        assert all(p.receipt_id for p in closure.parts.all())
+        assert all(p.receipt_id for p in erasure.parts.all())
 
     def test_remote_confirmation_before_local_success_does_not_finalize(
         self, settings, user, fake_provider

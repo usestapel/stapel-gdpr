@@ -16,8 +16,9 @@ from django.utils import timezone
 from stapel_gdpr.checks import check_data_owner_registry, check_reregistration_hashes
 from stapel_gdpr.models import (
     AccountClosureRequest,
-    AccountDeletionPart,
     DataExportRequest,
+    ErasurePart,
+    ErasureRequest,
 )
 from stapel_gdpr.orchestrator import gdpr_orchestrator
 from stapel_gdpr.owners import data_owner_report
@@ -96,7 +97,7 @@ class TestCompletenessBlocksDeleted:
         assert closure.status == AccountClosureRequest.STATUS_DELETED
         assert closure.completeness_waived is False
         assert closure.registry_version == "test-registry-4"
-        receipts = dict(closure.parts.values_list("service", "receipt_id"))
+        receipts = dict(closure.erasure.parts.values_list("owner", "receipt_id"))
         assert receipts["recordings"] == "tombstone-42"
         assert receipts["fake"]  # local owners leave a receipt too
 
@@ -129,15 +130,19 @@ class TestOwnerTimeout:
         closure = gdpr_orchestrator.initiate_closure(user.pk)
         gdpr_orchestrator.execute_deletion(closure)
 
-        part = closure.parts.get(service="recordings")
+        erasure = closure.erasure
+        part = erasure.parts.get(owner="recordings")
         assert part.deadline is not None
-        AccountDeletionPart.objects.filter(pk=part.pk).update(
+        ErasurePart.objects.filter(pk=part.pk).update(
             deadline=timezone.now() - timedelta(minutes=1),
         )
 
         assert sweep_deletion_deadlines() == 1
         part.refresh_from_db()
-        assert part.status == AccountDeletionPart.STATUS_TIMEOUT
+        assert part.state == ErasurePart.STATE_TIMEOUT
+
+        erasure.refresh_from_db()
+        assert erasure.state == ErasureRequest.STATE_TIMEOUT
 
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_DELETING

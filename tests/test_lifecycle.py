@@ -303,7 +303,7 @@ class TestPrimaryIdentityIsErased:
             identity_erased_at=None,
         )
         closure.refresh_from_db()
-        gdpr_orchestrator._maybe_finalize(closure)
+        gdpr_orchestrator._maybe_finalize(closure.erasure)
 
         closure.refresh_from_db()
         assert closure.status == AccountClosureRequest.STATUS_DELETING

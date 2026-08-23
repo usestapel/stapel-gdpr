@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "user.deleted",
-  "description": "All user PII permanently deleted after grace period. Every package storing user data must subscribe; remote services confirm with gdpr.section.erased carrying the same correlation_id.",
+  "description": "DEPRECATED since 0.5.0, removed in 0.6.0 — subscribe to gdpr.erasure.requested instead, which carries the subject pair this event cannot express. All user PII permanently deleted after grace period; remote services confirm with gdpr.section.erased carrying the same correlation_id.",
   "type": "object",
   "required": ["user_id", "correlation_id"],
   "properties": {

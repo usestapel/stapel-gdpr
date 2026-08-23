@@ -42,14 +42,33 @@ KIND_LOCAL = "local"
 #: Owner that confirms out of band with ``gdpr.section.erased``.
 KIND_REMOTE = "remote"
 
+#: The subject an owner claims when it says nothing else. The account is the
+#: only subject the registry knew before 0.5.0, so a plain list of names —
+#: every deployment's setting until the bump — keeps meaning exactly what it
+#: meant: these stores hold data about the *account*.
+SUBJECT_ACCOUNT = "account"
+
 __all__ = [
     "KIND_LOCAL",
     "KIND_REMOTE",
+    "SUBJECT_ACCOUNT",
     "DataOwner",
     "RegistryReport",
     "data_owner_report",
     "registry_version",
+    "subject_types",
 ]
+
+
+def subject_types() -> tuple[str, ...]:
+    """Subjects an erasure may be requested for, in declaration order."""
+    declared = gdpr_settings.SUBJECT_TYPES or [SUBJECT_ACCOUNT]
+    seen: list[str] = []
+    for entry in declared:
+        name = str(entry).strip()
+        if name and name not in seen:
+            seen.append(name)
+    return tuple(seen)
 
 
 @dataclass(frozen=True)
@@ -59,10 +78,17 @@ class DataOwner:
     name: str
     kind: str
     timeout: timedelta
+    #: Subject types this owner holds data about. An owner is only asked
+    #: about — and only ever blocks — the subjects it claims, so a recording
+    #: erasure waits for recordings and media, not for billing.
+    subjects: tuple[str, ...] = (SUBJECT_ACCOUNT,)
 
     @property
     def is_local(self) -> bool:
         return self.kind == KIND_LOCAL
+
+    def claims(self, subject_type: str) -> bool:
+        return subject_type in self.subjects
 
 
 @dataclass(frozen=True)
@@ -87,6 +113,10 @@ class RegistryReport:
             if o.name == name:
                 return o
         return None
+
+    def owners_for(self, subject_type: str) -> tuple[DataOwner, ...]:
+        """Declared owners that hold data about *subject_type*."""
+        return tuple(o for o in self.owners if o.claims(subject_type))
 
     @property
     def problems(self) -> tuple[str, ...]:
@@ -126,11 +156,41 @@ def _registered_sections() -> set[str]:
     return set(gdpr_registry.sections)
 
 
+def _normalize_subjects(raw) -> tuple[str, ...]:
+    """Subject types out of whatever the declaration wrote there."""
+    if raw is None:
+        return (SUBJECT_ACCOUNT,)
+    if isinstance(raw, str):
+        raw = [raw]
+    names = [str(s).strip() for s in raw]
+    kept = tuple(dict.fromkeys(n for n in names if n))
+    return kept or (SUBJECT_ACCOUNT,)
+
+
 def _declarations() -> list[dict]:
-    """Raw declaration list: DATA_OWNERS plus the legacy remote setting."""
+    """Raw declaration list: DATA_OWNERS plus the legacy remote setting.
+
+    ``DATA_OWNERS`` accepts three shapes, all resolving to the same spec:
+
+    * a map ``{"recordings": ["account", "recording"]}`` — the 0.5.0 form,
+      an owner and the subjects it claims (the value may also be a full
+      spec dict, so ``kind``/``timeout_hours`` stay available);
+    * a list of names ``["auth", "profiles"]`` — every entry claims
+      ``account``, which is what the list meant before subjects existed;
+    * a list of spec dicts, optionally carrying ``subject_types``.
+    """
     declared: list[dict] = []
     seen: set[str] = set()
-    for entry in gdpr_settings.DATA_OWNERS or []:
+    configured = gdpr_settings.DATA_OWNERS or []
+    if isinstance(configured, dict):
+        entries = []
+        for name, value in configured.items():
+            spec = dict(value) if isinstance(value, dict) else {"subject_types": value}
+            spec["name"] = name
+            entries.append(spec)
+    else:
+        entries = list(configured)
+    for entry in entries:
         spec = {"name": entry} if isinstance(entry, str) else dict(entry)
         name = str(spec.get("name") or "").strip()
         if not name or name in seen:
@@ -166,7 +226,12 @@ def data_owner_report() -> RegistryReport:
             kind = KIND_LOCAL if name in registered else KIND_REMOTE
         hours = spec.get("timeout_hours")
         timeout = timedelta(hours=float(hours)) if hours else default_timeout
-        owners.append(DataOwner(name=name, kind=kind, timeout=timeout))
+        owners.append(DataOwner(
+            name=name,
+            kind=kind,
+            timeout=timeout,
+            subjects=_normalize_subjects(spec.get("subject_types")),
+        ))
         if kind == KIND_LOCAL and name not in registered:
             missing.append(name)
 

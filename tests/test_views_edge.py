@@ -329,8 +329,9 @@ class TestAdminSmoke:
         assert isinstance(
             registry[ReRegistrationHash], gdpr_admin.ReRegistrationHashAdmin,
         )
-        assert gdpr_admin.AccountClosureRequestAdmin.inlines == [
-            gdpr_admin.AccountDeletionPartInline,
+        assert gdpr_admin.ErasureRequestAdmin.inlines == [
+            gdpr_admin.ErasurePartInline,
+            gdpr_admin.SubprocessorObligationInline,
         ]
         assert "user_id" in registry[LegalHold].list_display
 

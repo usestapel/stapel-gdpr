@@ -4,20 +4,43 @@ Configure in Django settings::
 
     STAPEL_GDPR = {
         # -- Data-owner registry (mandatory, versioned) --------------------
-        # Every store that holds personal data. An erasure is only ever
-        # marked DELETED when every owner listed here returned a receipt,
-        # so an owner missing from this list is a store that silently keeps
-        # the user's data forever. Entries are either a bare name (kind is
-        # inferred: 'local' when an in-process GDPRProvider with that
-        # section is registered, 'remote' otherwise) or a dict:
-        #   {"name": "recordings", "kind": "remote", "timeout_hours": 6}
+        # Every store that holds personal data, and WHICH subjects it holds
+        # data about. An erasure is only ever marked DELETED when every
+        # owner claiming that subject type returned a receipt, so an owner
+        # missing from this map is a store that silently keeps the data
+        # forever. Preferred form — a map owner -> subject types:
+        #   "DATA_OWNERS": {
+        #       "recordings": ["account", "workspace", "meeting", "recording"],
+        #       "billing":    ["account"],
+        #       "cdn":        {"subject_types": ["account", "file"],
+        #                      "kind": "remote", "timeout_hours": 6},
+        #   }
+        # A plain list is still accepted and means ["account"] for every
+        # entry — nothing breaks on the bump. Entries there are either a
+        # bare name (kind is inferred: 'local' when an in-process
+        # GDPRProvider with that section is registered, 'remote' otherwise)
+        # or a dict: {"name": "recordings", "kind": "remote",
+        # "timeout_hours": 6, "subject_types": [...]}.
         "DATA_OWNERS": ["auth", "profiles", {"name": "cdn", "kind": "remote"}],
+        # Subjects an erasure can be requested for. The account is the
+        # historical one; entities were added in 0.5.0 so a host can put a
+        # deleted recording/document/file on the same receipts path.
+        "SUBJECT_TYPES": ["account", "workspace", "meeting", "recording", "document", "file"],
+        # Purge SLA: due_at = requested_at + this. The account keeps its own
+        # cancellable 30-day grace on top (AccountClosureRequest); entities
+        # have no grace — the UI removal already happened.
+        "ERASURE_SLA_DAYS": 30,
         # Bump whenever DATA_OWNERS changes. Stamped onto every closure so
         # an audit can tell which inventory a given erasure was judged by.
         "DATA_OWNERS_VERSION": "2026-08-13.1",
-        # Grace given to an owner before its deletion part is marked timed
+        # Grace given to an owner before its erasure part is marked timed
         # out (a timed-out part blocks DELETED just like a failed one).
         "OWNER_TIMEOUT_HOURS": 24,
+        # How long an owner may stay silent after `probe_data_owners` before
+        # gdpr.W006 reports it at boot. Silence is a finding, not a log line:
+        # an owner that never answers is an owner whose erasures will time
+        # out, and this says so before the first request does.
+        "OWNER_ALIVE_MAX_AGE_HOURS": 48,
         # Legacy: remote services that must confirm erasure. Folded into
         # DATA_OWNERS as kind='remote' entries; kept for compatibility.
         "REMOTE_DELETION_SERVICES": [],
@@ -66,6 +89,29 @@ Configure in Django settings::
         # Defaults to SECRET_KEY.
         "REREG_SALT": "",
 
+        # -- Entity erasure authorization ----------------------------------
+        # Dotted path to ``authorize(request, subject_type, subject_key) ->
+        # bool``, consulted by ``POST /erasures``. Empty means staff only:
+        # the endpoint erases whatever the caller names, so the host's own
+        # ownership predicate belongs here before any product wires it.
+        "ERASURE_AUTHORIZER": "",
+
+        # -- Subprocessor ledger -------------------------------------------
+        # Processors that received a copy of the data and the contractual
+        # window they have to delete it in. One SubprocessorObligation row
+        # per entry is written when a request reaches DELETED, so
+        # "erased from all processors by X" is a queryable date instead of
+        # a sentence in a DPA.
+        "SUBPROCESSORS": [
+            {"name": "openai", "window_days": 30},
+            {"name": "google", "window_days": 55},
+        ],
+
+        # -- DSAR intake ----------------------------------------------------
+        # Where ``gdpr.dsar.opened`` goes. Empty means nobody is told a
+        # request arrived, which is how a 30-day statutory clock is missed.
+        "DSAR_STAFF_EMAILS": ["privacy@example.com"],
+
         # -- Escape hatches (named, loud, off by default) -------------------
         # Mark a closure DELETED without a receipt from every declared
         # owner. Turns a proven erasure back into a hopeful one.
@@ -82,7 +128,15 @@ gdpr_settings = AppSettings(
     defaults={
         "DATA_OWNERS": [],
         "DATA_OWNERS_VERSION": "",
+        "SUBJECT_TYPES": [
+            "account", "workspace", "meeting", "recording", "document", "file",
+        ],
+        "ERASURE_SLA_DAYS": 30,
         "OWNER_TIMEOUT_HOURS": 24,
+        "OWNER_ALIVE_MAX_AGE_HOURS": 48,
+        "ERASURE_AUTHORIZER": "",
+        "SUBPROCESSORS": [],
+        "DSAR_STAFF_EMAILS": [],
         "REMOTE_DELETION_SERVICES": [],
         "SESSION_REVOKER": "",
         "PRIMARY_IDENTITY_ERASURE": "anonymize",
