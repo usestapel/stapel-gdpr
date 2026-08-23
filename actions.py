@@ -1,4 +1,5 @@
-"""Action subscriptions of the GDPR module.
+"""Action subscriptions of the GDPR module. Consumed contracts live in
+``schemas/consumes/``.
 
 Owners confirm erasure of their slice by emitting ``gdpr.section.erased``
 with the correlation_id they received in ``gdpr.erasure.requested`` (or, for
@@ -6,10 +7,18 @@ one more minor, in the deprecated ``user.deleted``), and prove their
 subscriber is actually running by answering ``gdpr.owner.probe`` with
 ``gdpr.owner.alive`` from the same module. Handlers must be idempotent —
 delivery is at-least-once.
+
+``gdpr.erasure.open`` runs the other way: it is how a service OPENS an
+erasure here, since ``gdpr_orchestrator.request_erasure`` is reachable only
+in-process and the owner that detects the need usually runs somewhere else.
+See :mod:`stapel_gdpr.functions` for its synchronous sibling and
+:mod:`stapel_gdpr.client` for the seam an owner library points at.
 """
 import logging
 
 from stapel_core.comm import on_action
+
+from .functions import ERASURE_OPEN, ERASURE_OPEN_SCHEMA, open_from_payload
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +63,37 @@ OWNER_ALIVE_SCHEMA = {
     },
     "additionalProperties": False,
 }
+
+
+@on_action(ERASURE_OPEN, schema=ERASURE_OPEN_SCHEMA)
+def handle_erasure_open(event):
+    """Open an erasure asked for by another service.
+
+    Idempotent on ``idempotency_key``: the same key returns the request that
+    already exists, so a redelivery — or a purge job that asks again tomorrow
+    — cannot mint a second erasure for one subject.
+
+    A malformed or unknown-subject payload is logged and DROPPED rather than
+    re-raised. Redelivery cannot fix a typo'd ``subject_type``, and an Action
+    that fails forever occupies the consumer's retry budget while looking
+    exactly like a downstream outage. The caller that needs to be told is the
+    one that called the ``gdpr.erasure.request`` Function, where the error
+    reaches it synchronously.
+    """
+    try:
+        request = open_from_payload(event.payload)
+    except ValueError as exc:
+        logger.error(
+            "Refused gdpr.erasure.open (%s): %s",
+            exc, getattr(event, "event_id", "?"),
+        )
+        return
+
+    logger.info(
+        "GDPR erasure opened from %s [request=%s subject=%s:%s]",
+        getattr(event, "service", "?") or "?", request.pk,
+        request.subject_type, request.subject_key,
+    )
 
 
 @on_action("gdpr.section.erased", schema=SECTION_ERASED_SCHEMA)

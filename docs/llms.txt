@@ -1,8 +1,8 @@
-# stapel-gdpr 0.5.0
+# stapel-gdpr 0.5.1
 
 GDPR compliance: staged async data export (Art. 15/20) with status polling and download; subject-scoped erasure (Art. 17) — account, workspace, meeting, recording, document, file — each proven by one receipt per data owner that claims the subject type, with a purge SLA, timeout sweep and a subprocessor ledger behind `fully_erased_by`; account closure keeps its cancellable 30-day grace and produces an ErasureRequest at grace end; DSAR intake (Art. 12) with automated acknowledgement and both statutory clocks; data-owner liveness probing; inactivity closure, retention cleanup, LegalHold and ReRegistrationHash; orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote owners.
 
-Contract: axes 3 · surface 17 · extension points 4 · error codes 57.
+Contract: axes 3 · surface 18 · extension points 4 · error codes 57.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -55,6 +55,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - record_subprocessor_obligations — stapel_gdpr.subprocessors.record_subprocessor_obligations
   instead of: a log line recording the DPA deletion obligation, which no audit can query
   Write the SubprocessorObligation rows for one erasure — one per processor in STAPEL_GDPR["SUBPROCESSORS"], each with the date its contractual window closes. The orchestrator calls it automatically when an erasure reaches DELETED; call it directly from a data owner whose slice went to a SUBSET of the processors, passing that subset. This is what ErasureRequest.fully_erased_by is computed from, so a product can say "erased from our systems on X, from every processor by Y".
+- request_erasure — stapel_gdpr.client.request_erasure
+  instead of: an owner library deleting its own rows on a retention schedule, outside the per-owner receipts ledger, from stapel_gdpr.orchestrator import gdpr_orchestrator, in a service that may not be the one running stapel-gdpr
+  Open an erasure for one subject from ANY service, including one that does not run this module: it calls the gdpr.erasure.request comm Function when a FUNCTION_TRANSPORT is configured and the in-process orchestrator otherwise, and answers {request_id, due_at, state} either way. Call this — or point an owner library's erasure seam at stapel_gdpr.client.CommErasureClient — instead of importing gdpr_orchestrator.request_erasure: the import has no remote form, so an owner that reaches for it works in a monolith and 503s (or, worse, hard-deletes outside the receipts ledger) the day the two run in separate processes. Always pass idempotency_key from a retry-prone caller: at-least-once delivery makes a redelivery indistinguishable from a second decision, and an un-keyed retry mints a second erasure for one subject with receipt slots nobody will ever complete.
 - store_hashes — stapel_gdpr.reregistration.store_hashes
   instead of: hand-rolled hashing of email/phone for post-deletion re-registration memory
   Persist re-registration hashes for a user about to be erased, in the one keyed-HMAC scheme this library defines (part of stapel_gdpr.__all__). GDPROrchestrator.execute_deletion() already calls it before erasure runs; call it directly from any OTHER writer that wants a row in ReRegistrationHash — rows written around it are recorded as scheme='unverified', never match a lookup, and are reported by the gdpr.E004 system check.

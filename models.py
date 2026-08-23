@@ -308,6 +308,16 @@ class ErasureRequest(models.Model):
     restored_from  = models.DateTimeField(null=True, blank=True)
     #: Free text for an operator: why this request was opened by hand.
     note           = models.TextField(blank=True, default='')
+    #: De-duplication key for erasures opened from ANOTHER service, over the
+    #: bus or the ``gdpr.erasure.request`` Function. Delivery there is
+    #: at-least-once and a caller's retry is indistinguishable from a second
+    #: decision, so a repeat of the same key returns the request that already
+    #: exists instead of minting a second one for the same subject. Unique
+    #: when set; empty (the default) opts out, which is what every in-process
+    #: caller does.
+    idempotency_key = models.CharField(
+        max_length=128, blank=True, default='', db_index=True,
+    )
 
     class Meta:
         app_label = 'gdpr'
@@ -317,6 +327,16 @@ class ErasureRequest(models.Model):
                 fields=['origin', 'source_request'],
                 condition=models.Q(source_request__isnull=False),
                 name='gdpr_erasure_one_requeue_per_source',
+            ),
+            # Partial: '' means "no key", and several unkeyed requests for one
+            # subject are legitimate (a re-queue after a backup restore is the
+            # designed case). The constraint is the mechanism, not the
+            # pre-check in request_erasure — two concurrent deliveries of the
+            # same key both find nothing and both try to insert.
+            models.UniqueConstraint(
+                fields=['idempotency_key'],
+                condition=~models.Q(idempotency_key=''),
+                name='gdpr_erasure_one_request_per_idempotency_key',
             ),
         ]
         indexes = [

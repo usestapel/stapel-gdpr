@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.erasure.request",
+  "description": "Open an erasure for one subject and get its identity back. The synchronous half of gdpr.erasure.open, for a caller that must record the request id (to link its own row to the erasure, or to show \"pending deletion until X\" straight away). Same payload, same request, same idempotency: a repeat of the same idempotency_key returns the EXISTING request — {request_id, due_at, state} of the row that is already open — instead of a second one. Response: {\"request_id\": integer, \"due_at\": string (ISO-8601), \"state\": \"queued\"|\"erasing\"|\"deleted\"|\"timeout\"}. Raises on a subject_type outside STAPEL_GDPR[\"SUBJECT_TYPES\"]. A comm call carries no session: as with every Function, this is as authoritative as the transport that reaches it, so a host exposing it over HTTP puts it behind its own service credential.",
+  "type": "object",
+  "required": ["subject_type", "subject_key"],
+  "properties": {
+    "subject_type":    { "type": "string", "description": "One of STAPEL_GDPR[\"SUBJECT_TYPES\"].", "examples": ["account", "workspace", "meeting", "recording", "document", "file"] },
+    "subject_key":     { "type": "string", "description": "The host's own id for that subject (a user id for \"account\")." },
+    "workspace_id":    { "type": "string", "description": "Workspace the subject belongs to, for owners that partition their stores by it." },
+    "requested_by":    { "type": "string", "description": "User id of whoever asked, when a person did." },
+    "origin":          { "type": "string", "enum": ["user", "dsar", "inactivity", "restore_requeue", "admin"], "description": "Why this erasure exists. Defaults to \"user\"." },
+    "idempotency_key": { "type": "string", "maxLength": 128, "description": "De-duplication key, unique across erasures. Same key = same request." }
+  },
+  "additionalProperties": false
+}

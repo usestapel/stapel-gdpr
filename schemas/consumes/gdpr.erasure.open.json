@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.erasure.open",
+  "description": "Open an erasure for one subject, from a service that is NOT this one. The owner that detects the need (a retention purge in stapel-recordings, a host's delete view in another service) cannot reach GDPROrchestrator.request_erasure in-process, and this is the fire-and-forget half of the answer: it opens the same request, with the same per-owner receipt slots and the same purge SLA, that POST /erasures opens. Nothing comes back — a caller that needs the request id synchronously calls the gdpr.erasure.request Function instead. Authorization is NOT re-checked here: reaching the bus is the credential, exactly as for every other Action, so the emitting service owns the ownership question the way the ERASURE_AUTHORIZER seam owns it on the HTTP path. Delivery is at-least-once, so send idempotency_key: a repeat of the same key returns the request that already exists rather than minting a second erasure for one subject.",
+  "type": "object",
+  "required": ["subject_type", "subject_key"],
+  "properties": {
+    "subject_type":    { "type": "string", "description": "One of STAPEL_GDPR[\"SUBJECT_TYPES\"]. Anything else is refused — a typo'd subject would produce a request no owner can ever answer, which looks exactly like an owner that went silent.", "examples": ["account", "workspace", "meeting", "recording", "document", "file"] },
+    "subject_key":     { "type": "string", "description": "The host's own id for that subject (a user id for \"account\")." },
+    "workspace_id":    { "type": "string", "description": "Workspace the subject belongs to, for owners that partition their stores by it." },
+    "requested_by":    { "type": "string", "description": "User id of whoever asked, when a person did. Empty for platform-initiated erasures." },
+    "origin":          { "type": "string", "enum": ["user", "dsar", "inactivity", "restore_requeue", "admin"], "description": "Why this erasure exists. Defaults to \"user\"." },
+    "idempotency_key": { "type": "string", "maxLength": 128, "description": "De-duplication key, unique across erasures. Same key = same request. Empty opts out, which under at-least-once delivery means a redelivery opens a second erasure for the same subject." }
+  },
+  "additionalProperties": false
+}

@@ -12,6 +12,10 @@
     {
       "select": "functions",
       "path": "subprocessors.py"
+    },
+    {
+      "select": "functions",
+      "path": "client.py"
     }
   ],
   "surface": {
@@ -92,6 +96,14 @@
       "intent": "Write the SubprocessorObligation rows for one erasure — one per processor in STAPEL_GDPR[\"SUBPROCESSORS\"], each with the date its contractual window closes. The orchestrator calls it automatically when an erasure reaches DELETED; call it directly from a data owner whose slice went to a SUBSET of the processors, passing that subset. This is what ErasureRequest.fully_erased_by is computed from, so a product can say \"erased from our systems on X, from every processor by Y\".",
       "instead_of": [
         "a log line recording the DPA deletion obligation, which no audit can query"
+      ]
+    },
+    "request_erasure": {
+      "kind": "factory",
+      "intent": "Open an erasure for one subject from ANY service, including one that does not run this module: it calls the gdpr.erasure.request comm Function when a FUNCTION_TRANSPORT is configured and the in-process orchestrator otherwise, and answers {request_id, due_at, state} either way. Call this — or point an owner library's erasure seam at stapel_gdpr.client.CommErasureClient — instead of importing gdpr_orchestrator.request_erasure: the import has no remote form, so an owner that reaches for it works in a monolith and 503s (or, worse, hard-deletes outside the receipts ledger) the day the two run in separate processes. Always pass idempotency_key from a retry-prone caller: at-least-once delivery makes a redelivery indistinguishable from a second decision, and an un-keyed retry mints a second erasure for one subject with receipt slots nobody will ever complete.",
+      "instead_of": [
+        "from stapel_gdpr.orchestrator import gdpr_orchestrator, in a service that may not be the one running stapel-gdpr",
+        "an owner library deleting its own rows on a retention schedule, outside the per-owner receipts ledger"
       ]
     },
     "declared_subprocessors": {

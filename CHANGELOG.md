@@ -5,6 +5,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-23
+
+Additive. 0.5.0 gave every subject the account's erasure machine but left one
+door unbuilt: an erasure could only be opened **in-process**, through
+`gdpr_orchestrator.request_erasure`. In a fleet the owner that DETECTS the need
+is almost never the service running this module — stapel-recordings'
+`purge_soft_deleted_recordings`, a host's delete view in another container —
+and it has no import path here. The gap does not surface as an error; it
+surfaces as an owner deleting its own rows on a retention schedule, outside the
+per-owner receipts ledger the whole design exists to keep.
+
+### Added — the intake other services can reach
+
+- **`gdpr.erasure.open`** (consumed Action, `schemas/consumes/`):
+  `{subject_type, subject_key, workspace_id?, requested_by?, origin?,
+  idempotency_key?}` → `request_erasure`. Fire-and-forget, for a caller that
+  only needs the erasure to happen. A malformed or unknown-subject payload is
+  logged and dropped rather than retried forever — redelivery cannot fix a
+  typo, and an Action that fails permanently occupies the consumer's retry
+  budget while looking exactly like a downstream outage.
+- **`gdpr.erasure.request`** (comm Function, `schemas/functions/`): the same
+  payload, answering `{request_id, due_at, state}`, for a caller that must
+  record the id or show a deadline right away.
+- **`stapel_gdpr.client.request_erasure(...)`** — the one dotted path a
+  library needs. It calls the Function when
+  `STAPEL_COMM["FUNCTION_TRANSPORT"]` is configured and the in-process
+  orchestrator otherwise, answering the same three values either way. At the
+  default `"inprocess"` there is no RPC to make: either this process has the
+  orchestrator or nobody does.
+- **`stapel_gdpr.client.CommErasureClient`** — the same choice packaged as the
+  object an owner library's erasure seam instantiates. A host wires
+  `STAPEL_RECORDINGS = {"ERASURE_CLIENT": "stapel_gdpr.client.CommErasureClient"}`
+  and that container works in a monolith and in a fleet unchanged. Duck-typed
+  against the seam (`available` / `has_open_erasure` / `request_erasure`), not
+  a subclass of the owner's ABC — modules never import each other, and this
+  module must not become a dependency of the modules that report to it.
+
+### Added — idempotency, because delivery is at-least-once
+
+`ErasureRequest.idempotency_key` (migration `0005`, expand-only: a `''`-default
+column and a PARTIAL unique index that ignores the empty value, so no backfill
+and no window where an old writer violates the new rule).
+`GDPROrchestrator.request_erasure(..., idempotency_key=...)` returns the
+request that already carries that key instead of opening a second one — same
+row, no second set of receipt slots, no second `gdpr.erasure.requested`
+restarting every owner's deadline clock. The constraint, not the pre-check, is
+the mechanism: two concurrent deliveries both find nothing and both try to
+insert, and the loser's whole transaction — row, parts and outbox event —
+rolls back before it returns the winner.
+
+Empty (the default) opts out, which is right for every in-process caller and
+for the restore re-queue, whose idempotency is the `(origin, source_request)`
+constraint instead. `CommErasureClient` sends
+`owner:<subject_type>:<subject_key>`, so an owner's daily sweep opens exactly
+one erasure per subject.
+
+Nothing existing changes: no setting was added, no signature broke, and a
+deployment that never emits the new Action behaves exactly as it did in 0.5.0.
+
 ## [0.5.0] — 2026-08-23
 
 Pre-1.0, so a minor is where breaking changes live. This one generalizes the

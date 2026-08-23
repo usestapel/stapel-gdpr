@@ -650,6 +650,7 @@ class GDPROrchestrator:
         source_request: ErasureRequest | None = None,
         restored_from=None,
         note: str = '',
+        idempotency_key: str = '',
     ) -> ErasureRequest:
         """Open an erasure for one subject and dispatch it to its owners.
 
@@ -665,57 +666,95 @@ class GDPROrchestrator:
         ``STAPEL_GDPR["SUBJECT_TYPES"]`` — a typo'd subject would otherwise
         produce a request no owner can ever answer, which looks exactly like
         an owner that went silent.
+
+        ``idempotency_key`` is for callers that reach this from ANOTHER
+        service (``gdpr.erasure.open`` / ``gdpr.erasure.request``): a repeat
+        of the same key returns the request that already exists — same row,
+        no second set of parts, no second announcement — because at-least-once
+        delivery makes a redelivery indistinguishable from a second decision.
+        Empty (the default) opts out, which is right for every in-process
+        caller and for the restore re-queue, whose idempotency is the
+        ``(origin, source_request)`` constraint instead.
         """
         if subject_type not in subject_types():
             raise ValueError('unknown_subject_type')
 
+        from django.db import IntegrityError
         from stapel_core.comm import mutate_and_emit
+
+        idempotency_key = str(idempotency_key or '')
+        if idempotency_key:
+            existing = ErasureRequest.objects.filter(
+                idempotency_key=idempotency_key,
+            ).first()
+            if existing is not None:
+                logger.info(
+                    'GDPR erasure already open for idempotency key %s '
+                    '[correlation=%s subject=%s:%s]',
+                    idempotency_key, existing.correlation_id,
+                    existing.subject_type, existing.subject_key,
+                )
+                return existing
 
         registry = data_owner_report()
         claiming = registry.owners_for(subject_type)
         now = timezone.now()
 
-        with mutate_and_emit() as emit:
-            request = ErasureRequest.objects.create(
-                subject_type=subject_type,
-                subject_key=str(subject_key),
-                workspace_id=str(workspace_id) if workspace_id else None,
-                requested_by=requested_by,
-                origin=origin,
-                requested_at=now,
-                grace_ends_at=grace_ends_at,
-                correlation_id=correlation_id or str(uuid_lib.uuid4()),
-                registry_version=registry.version,
-                state=ErasureRequest.STATE_ERASING,
-                closure=closure,
-                source_request=source_request,
-                restored_from=restored_from,
-                note=note,
-            )
-            ErasurePart.objects.bulk_create([
-                ErasurePart(
-                    request=request,
-                    owner=owner.name,
-                    kind=(ErasurePart.KIND_LOCAL if owner.is_local
-                          else ErasurePart.KIND_REMOTE),
-                    deadline=now + owner.timeout,
+        try:
+            with mutate_and_emit() as emit:
+                request = ErasureRequest.objects.create(
+                    subject_type=subject_type,
+                    subject_key=str(subject_key),
+                    workspace_id=str(workspace_id) if workspace_id else None,
+                    requested_by=requested_by,
+                    origin=origin,
+                    requested_at=now,
+                    grace_ends_at=grace_ends_at,
+                    correlation_id=correlation_id or str(uuid_lib.uuid4()),
+                    registry_version=registry.version,
+                    state=ErasureRequest.STATE_ERASING,
+                    closure=closure,
+                    source_request=source_request,
+                    restored_from=restored_from,
+                    note=note,
+                    idempotency_key=idempotency_key,
                 )
-                for owner in claiming
-            ])
-            emit(
-                'gdpr.erasure.requested',
-                {
-                    'request_id': request.pk,
-                    'correlation_id': request.correlation_id,
-                    'subject_type': request.subject_type,
-                    'subject_key': request.subject_key,
-                    'workspace_id': request.workspace_id or '',
-                    'requested_by': str(requested_by) if requested_by else '',
-                    'origin': request.origin,
-                    'due_at': request.due_at.isoformat(),
-                },
-                key=request.correlation_id,
-            )
+                ErasurePart.objects.bulk_create([
+                    ErasurePart(
+                        request=request,
+                        owner=owner.name,
+                        kind=(ErasurePart.KIND_LOCAL if owner.is_local
+                              else ErasurePart.KIND_REMOTE),
+                        deadline=now + owner.timeout,
+                    )
+                    for owner in claiming
+                ])
+                emit(
+                    'gdpr.erasure.requested',
+                    {
+                        'request_id': request.pk,
+                        'correlation_id': request.correlation_id,
+                        'subject_type': request.subject_type,
+                        'subject_key': request.subject_key,
+                        'workspace_id': request.workspace_id or '',
+                        'requested_by': str(requested_by) if requested_by else '',
+                        'origin': request.origin,
+                        'due_at': request.due_at.isoformat(),
+                    },
+                    key=request.correlation_id,
+                )
+        except IntegrityError:
+            # Two deliveries of the same key raced past the pre-check. The
+            # loser's whole transaction rolled back — row, parts and outbox
+            # event together — so returning the winner is the same answer it
+            # would have got a millisecond later.
+            if idempotency_key:
+                winner = ErasureRequest.objects.filter(
+                    idempotency_key=idempotency_key,
+                ).first()
+                if winner is not None:
+                    return winner
+            raise
         logger.info(
             'GDPR erasure requested [correlation=%s subject=%s:%s owners=%s]',
             request.correlation_id, subject_type, subject_key,

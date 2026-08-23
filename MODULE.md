@@ -12,6 +12,7 @@ Stapel ground rules apply: modules never import each other; all cross-module com
 | Account closure & deletion (Art. 17) | `POST user/account/{close,cancel-close}`, `GET user/account/close/status`, `GDPROrchestrator.initiate_closure/cancel_closure/execute_deletion` | 30-day grace period; the account is deactivated **through the model** (observers fire) and all sessions are revoked, or the closure is refused; deletion = local `GDPRProvider`s + erasure of the primary `users.User` row + `user.deleted` comm fan-out + per-owner receipts |
 | Server-side closed-account gate | `guards.AccountNotClosed` (on every view here), `guards.AccountClosureGuardMiddleware` (host-wired), `lifecycle.access_state` | Reads the closure row, never `is_active` — a token that syncs `is_active=true` back into the user table cannot reopen an erasing account |
 | Subject-scoped erasure (Art. 17) | `POST erasures`, `GET erasures/{id}`, `GET me/erasures`, `GDPROrchestrator.request_erasure` | The account's machine, generalized: a `workspace`/`meeting`/`recording`/`document`/`file` gets the same purge SLA (`ERASURE_SLA_DAYS`), the same one-receipt-per-owner ledger and the same refusal to self-certify. No grace — the host already removed it from the UI. Authorization is the host's `ERASURE_AUTHORIZER` |
+| Erasure intake from another service | `gdpr.erasure.open` (Action), `gdpr.erasure.request` (Function), `stapel_gdpr.client.request_erasure` / `CommErasureClient` | `request_erasure` is an in-process call, and the owner that detects the need (a retention purge, a delete view in another container) cannot reach it. The client helper picks the Function when a comm transport is configured and the orchestrator otherwise, so an owner library points one dotted path at it and works in both deployments. Idempotent on a caller-supplied `idempotency_key`: at-least-once delivery must not mint two erasures for one subject |
 | Erasure completeness | `owners.data_owner_report()`, `ErasurePart.receipt_id/deadline`, `checks.py` | An erasure flips to `deleted` only when every owner **claiming that subject type** returned a durable receipt against a registry with no missing/undeclared owners (and, for an account, the primary identity is gone). Silence times out, keeps blocking, and emits `gdpr.erasure.timeout` |
 | Data-owner liveness | `probe_data_owners` (daily), `DataOwnerHealth`, `GET owners/health`, `gdpr.W006` | Owners answer `gdpr.owner.alive` from the *same* subscriber that erases, so an answer proves the erasure path is consumed rather than that a container is deployed. A silent owner is named at boot instead of at the first missed deadline |
 | DSAR intake (Art. 12) | `POST/GET dsar`, `PATCH dsar/{id}`, `dsar.create_dsar`, `sweep_dsar_deadlines`, `gdpr.W008` | Authenticated and anonymous-with-captcha intake, automated acknowledgement inside the request (`ack_sent_at` is proof, not an assumption), both statutory clocks, and a wiring step handing erasure to `initiate_closure` and access/portability to `request_export` |
@@ -134,8 +135,77 @@ Comm **Actions consumed** (`actions.py`):
 |---|---|---|
 | `gdpr.section.erased` | `correlation_id`, `owner` (or the older `service`), `subject_type`, `subject_key`, `receipt_id`, `counts` (all optional but `correlation_id`) | `handle_section_erased` → stores the receipt on the matching `ErasurePart`, finalizes the request when every claiming owner has one |
 | `gdpr.owner.alive` | `owner`, `subject_types`, `correlation_id` (optional) | `handle_owner_alive` → stamps `DataOwnerHealth`, which `gdpr.W006` and `GET owners/health` read |
+| `gdpr.erasure.open` | `subject_type`, `subject_key`, `workspace_id?`, `requested_by?`, `origin?`, `idempotency_key?` (schema in `schemas/consumes/`) | `handle_erasure_open` → `request_erasure`. Fire-and-forget intake for a service that cannot import the orchestrator. Idempotent on `idempotency_key`; a malformed or unknown-subject payload is logged and dropped, never retried forever |
 
-Comm **Functions**: none provided, none called.
+Comm **Functions provided** (`functions.py`, schemas in `schemas/functions/`):
+
+| Function | Payload | Answers |
+|---|---|---|
+| `gdpr.erasure.request` | Same as `gdpr.erasure.open` | `{request_id, due_at, state}` — the synchronous door, for a caller that must record the id or show a deadline right away. Same idempotency: a repeat of the key answers with the request that already exists |
+
+Comm **Functions called**: none.
+
+### Opening an erasure from another service
+
+`gdpr_orchestrator.request_erasure(...)` is an **in-process** call. In a fleet
+the owner that detects the need is almost never the service running this
+module — stapel-recordings' `purge_soft_deleted_recordings`, a host's delete
+view in another container — and "import the orchestrator" has no remote form:
+it works in the monolith and fails the day the two are split, which is exactly
+when an owner starts deleting its own rows outside the receipts ledger.
+
+Since 0.5.1 there are three doors, and an owner library needs to know about
+only the last one:
+
+| Door | Reach for it when |
+|---|---|
+| `gdpr.erasure.open` (Action) | You only need the erasure to happen. `emit("gdpr.erasure.open", {...})` and carry on |
+| `gdpr.erasure.request` (Function) | You need `request_id` / `due_at` back — to link your own row to the erasure, or to render "pending deletion until X" immediately |
+| `stapel_gdpr.client.request_erasure(...)` | Always, from library code. It picks between the two by deployment so the calling module has no transport opinion at all |
+
+```python
+from stapel_gdpr.client import request_erasure
+
+result = request_erasure(
+    "recording", str(recording.id),
+    workspace_id=str(recording.workspace_id),
+    idempotency_key=f"purge:recording:{recording.id}",
+)
+result["request_id"], result["due_at"], result["state"]
+```
+
+The rule: **the Function when `STAPEL_COMM["FUNCTION_TRANSPORT"]` is
+configured, the in-process orchestrator otherwise.** At the default
+`"inprocess"` there is no RPC to make — either this process has the
+orchestrator or nobody does.
+
+**Always pass `idempotency_key` from anything that can ask twice** (a retry, a
+daily sweep, an at-least-once redelivery). Same key = same request: the row
+that already exists comes back, with no second set of receipt slots and no
+second `gdpr.erasure.requested` restarting every owner's deadline clock. An
+un-keyed retry is a second erasure of one subject, and one of the two will
+never be completed by anybody. The key is unique across erasures, so scope it
+to the caller (`"purge:recording:<id>"`, not `"<id>"`).
+
+**Wiring an owner library's seam.** An owner that exposes a dotted-path
+erasure-client seam — stapel-recordings' `STAPEL_RECORDINGS["ERASURE_CLIENT"]`
+is the reference shape — points it at:
+
+```python
+STAPEL_RECORDINGS = {"ERASURE_CLIENT": "stapel_gdpr.client.CommErasureClient"}
+```
+
+`CommErasureClient` is duck-typed against that seam (`available()`,
+`has_open_erasure()`, `request_erasure()`) rather than subclassing the owner's
+ABC — modules never import each other, and this module must not become a
+dependency of the modules that report to it. Unlike an owner's own default
+client it works in **both** deployments. It derives the idempotency key from
+the subject (`owner:<subject_type>:<subject_key>`), so a sweep that re-asks
+daily still opens exactly one erasure. Over a transport `has_open_erasure`
+answers `False` — there is no read Function for that question, and the key is
+what actually prevents the duplicate; the visible difference is a counter, not
+a second request. Override `idempotency_key()` or `key_prefix` to scope it
+differently.
 
 **Bus events** (microservices mode, constants in `stapel_core.gdpr`): publishes `gdpr.export.requested`; consumes `gdpr.export.completed` and `gdpr.delete.completed` via `manage.py consume_gdpr_completions`. (`_publish_delete_requested` for `gdpr.delete.requested` exists but is not on any current code path — deletion fan-out goes through the `user.deleted` comm action.)
 
