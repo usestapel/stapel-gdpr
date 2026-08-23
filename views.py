@@ -382,7 +382,11 @@ class AccountCloseStatusView(GDPRAPIView):
 
     @extend_schema(
         summary="Get account closure status",
-        responses={200: ClosureStatusSerializer},
+        # The 404 is the ordinary answer, not an exception: almost nobody has
+        # a closure on record. Undeclared, a generated client models this
+        # endpoint as always-succeeding and every caller learns about the
+        # refusal from a runtime throw.
+        responses={200: ClosureStatusSerializer, 404: StapelErrorSerializer},
         tags=["GDPR"],
     )
     def get(self, request: Request):  # noqa: R007
@@ -427,7 +431,38 @@ class ExportPartReadyView(GDPRAPIView):
     # an authenticated caller.
     permission_classes = [IsServiceRequest, permissions.IsAuthenticated]
 
-    @extend_schema(exclude=True)
+    # Published, not hidden. This endpoint is service-to-service, but it is
+    # still part of the contract another service has to implement against, and
+    # a hidden operation is one nobody can generate a typed caller for — the
+    # remote side ends up hand-rolling the body shape and discovering the
+    # required `service` field from a 400.
+    @extend_schema(
+        summary="Mark an export part ready (service-to-service)",
+        description=(
+            "Called by a remote data owner once its portion of an export is "
+            "staged. Requires a service credential (`IsServiceRequest`), not a "
+            "user session. When the last outstanding part arrives the archive "
+            "is assembled."
+        ),
+        request=inline_serializer(
+            name="GDPRExportPartReadyRequest",
+            fields={
+                "service": serializers.CharField(
+                    help_text="The data owner's section name, e.g. \"recordings\"."
+                ),
+                "bucket_path": serializers.CharField(
+                    required=False, allow_blank=True,
+                    help_text="Where the staged payload lives, empty for in-process owners.",
+                ),
+            },
+        ),
+        responses={
+            204: None,
+            400: StapelErrorSerializer,
+            403: StapelErrorSerializer,
+        },
+        tags=["GDPR"],
+    )
     def post(self, request: Request, request_id: int):  # noqa: R007
         # Belt and braces: a subclass that swaps permission_classes for a
         # looser list still cannot mark somebody else's part complete.
@@ -781,7 +816,14 @@ class DsarView(GDPRAPIView):
 
     @extend_schema(
         summary="List data-protection requests (staff)",
-        responses={200: DsarStatusSerializer(many=True)},
+        # The view is AllowAny because POST has to accept an anonymous
+        # submission, so the staff check on GET is hand-rolled in the handler
+        # and drf-spectacular cannot infer it from permission_classes. Declared
+        # here or it is invisible to every consumer of the contract.
+        responses={
+            200: DsarStatusSerializer(many=True),
+            403: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def get(self, request: Request):  # noqa: R007

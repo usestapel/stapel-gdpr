@@ -26,7 +26,7 @@ pip install stapel-gdpr
 |---|---|
 | Version | `0.5.1` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
-| HTTP operations | 7 |
+| HTTP operations | 15 |
 | Config axes | 3 |
 | Usage surface | 18 |
 | Extension points | 4 |
@@ -35,7 +35,7 @@ pip install stapel-gdpr
 
 ## Documentation
 
-[capabilities.json](https://github.com/usestapel/stapel-gdpr/blob/main/docs/capabilities.json) · [llms.txt (for agents)](https://github.com/usestapel/stapel-gdpr/blob/main/docs/llms.txt)
+[OpenAPI](https://github.com/usestapel/stapel-gdpr/blob/main/docs/schema.json) · [capabilities.json](https://github.com/usestapel/stapel-gdpr/blob/main/docs/capabilities.json) · [llms.txt (for agents)](https://github.com/usestapel/stapel-gdpr/blob/main/docs/llms.txt)
 
 ## Quick start
 
