@@ -5,6 +5,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-08-23
+
+Contract triad: docs/schema.json (13 paths/15 operations under /gdpr/api/v1/)
+and docs/flows.json emitted by the module's own codegen harness; two
+undeclared refusals annotated (404 on GET /user/account/close/status, 403 on
+GET /dsar); POST /internal/export/{id}/part-ready typed. No runtime change.
+
 ## [0.5.1] — 2026-08-23
 
 Additive. 0.5.0 gave every subject the account's erasure machine but left one
