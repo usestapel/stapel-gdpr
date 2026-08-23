@@ -5,6 +5,155 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-23
+
+Pre-1.0, so a minor is where breaking changes live. This one generalizes the
+subject of an erasure, adds the three edges the machine never had (intake,
+re-queue, the subprocessor ledger), and makes an owner's silence a finding
+instead of a log line.
+
+### Breaking
+
+- **`AccountDeletionPart` is gone**, replaced by `ErasurePart` (FK to
+  `ErasureRequest`, not to a closure; `status` → `state`, `service` → `owner`,
+  `completed_at` → `receipt_at`, `error` → `note`). Migration 0004 is a
+  **cutover**: the rows are carried into the new table and the old one is
+  dropped in the same release, so there is no window in which both exist.
+  Deploy stop-the-world. Code that imported `AccountDeletionPart`, or read
+  `closure.parts`, moves to `closure.erasure.parts`.
+- **`AccountClosureRequest.parts` no longer exists.** `all_remote_parts_done`
+  and `unreceipted_owners` still answer the same questions, now through
+  `closure.erasure`.
+- **`tasks.notify_llm_providers_of_deletion` is removed** — deletion-driven,
+  no deprecation window. It wrote a log line claiming to record a DPA
+  obligation, which no audit could query. `subprocessors.record_subprocessor_obligations`
+  writes a `SubprocessorObligation` row per processor instead, and the
+  orchestrator calls it automatically when an erasure completes.
+- **`GDPROrchestrator.mark_section_erased` takes `counts`** and matches on
+  `ErasureRequest.correlation_id` rather than the closure's. Callers using the
+  documented comm path are unaffected; a host calling the method directly with
+  positional arguments still works.
+- **`user.deleted` is deprecated**, not removed: it keeps firing for account
+  erasures for one minor and disappears in 0.6.0. Subscribe to
+  `gdpr.erasure.requested`, which carries the subject pair `user.deleted`
+  cannot express.
+
+Not breaking, deliberately: `STAPEL_GDPR["DATA_OWNERS"]` still accepts a plain
+list of names, which now means `["account"]` for every entry. No host has to
+touch its settings on this bump.
+
+### Added — the subject is a parameter
+
+`ErasureRequest(subject_type, subject_key, workspace_id, requested_by, origin,
+requested_at, grace_ends_at, due_at, state, completed_at, correlation_id)` with
+`queued → erasing → deleted | timeout`. A workspace, meeting, recording,
+document or file now gets the account's machine: a purge SLA
+(`ERASURE_SLA_DAYS`, default 30), one receipt per data owner, the same refusal
+to self-certify on silence. Entities get no grace — the host already removed
+them from the UI, so the clock is a purge deadline, not a waiting period.
+
+`AccountClosureRequest` is unchanged as the user-facing grace/cancel object and
+creates its `ErasureRequest(subject_type="account")` at grace end, carrying the
+closure's own correlation id. **The 0.4.x HTTP surface is identical.**
+
+`DATA_OWNERS` grows from a list of names into a map owner → subject types, so a
+recording erasure waits for recordings and media and not for billing. Both
+forms resolve to the same declaration; `kind`/`timeout_hours` remain available
+per owner.
+
+### Added — silence is a finding
+
+- `probe_data_owners` (daily) emits `gdpr.owner.probe`; owners answer
+  `gdpr.owner.alive {owner, subject_types}` **from the same subscriber that
+  handles erasure**, so an answer proves the erasure path is consumed rather
+  than that a container is deployed.
+- `DataOwnerHealth` stores it; `GET /gdpr/api/v1/owners/health` (staff) is the
+  table; `gdpr.W006` names every declared owner with no answer in
+  `OWNER_ALIVE_MAX_AGE_HOURS` (48) at **boot**, rather than at the first
+  erasure that times out thirty days later.
+- `sweep_deletion_deadlines` is subject-agnostic and now flips the request too,
+  emitting `gdpr.erasure.timeout {owners, ...}` so a host can alert.
+
+### Added — DSAR intake
+
+`DsarRequest` carries both statutory clocks (`ack_due_at` = three business
+days, `resolve_due_at` = thirty calendar days). `POST /dsar` takes an
+authenticated request and an anonymous one from a public /privacy form behind
+stapel-core's tiered captcha policy. The acknowledgement (`gdpr.dsar.received`)
+goes out inside intake and stamps `ack_sent_at` — an unmet deadline is a NULL
+the sweep and the boot check can see, not an assumption that mail was sent.
+Staff get `gdpr.dsar.opened` at `DSAR_STAFF_EMAILS`.
+
+A request matched to an account is handed to the mechanism that answers it:
+`erasure` to `initiate_closure` with its cancellable grace intact,
+`access`/`portability` to `request_export`. An anonymous one waits for staff to
+match it (`PATCH /dsar/{id}` with `user_id`) — turning an unverified email into
+an erasure is a deletion oracle. `sweep_dsar_deadlines` (daily) emits
+`gdpr.dsar.overdue` once per deadline; `gdpr.W008` reports the unacknowledged
+queue at boot.
+
+`gdpr.W008` rather than the `W007` the spec asked for: that id has been the
+`EXPORT_BUCKET_PREFIX` warning since 0.4.x, and silently reusing a published
+check id would break every deployment that silenced it.
+
+### Added — the restore that undoes an erasure
+
+`manage.py gdpr_requeue_after_restore --restored-from <iso>` (plus `--dry-run`)
+re-arms the clock for every erasure that completed inside the restored window
+(with a day of slack, since a backup's timestamp is when the snapshot started).
+Idempotent by construction rather than by a flag file: the clone FKs the
+request it re-runs and `(origin, source_request)` is unique, so a repeated or
+overlapping run writes nothing. One line for each product's deploy README:
+*after any restore, run this with the backup's timestamp.*
+
+### Added — the subprocessor ledger
+
+`STAPEL_GDPR["SUBPROCESSORS"] = [{"name": "openai", "window_days": 30}, ...]`.
+One `SubprocessorObligation` row per processor per erasure, written when the
+erasure reaches `deleted`, with the date that processor's window closes.
+`ErasureRequest.fully_erased_by` is the max of our own `due_at` and every
+obligation's, and the status endpoints publish it — so a product can say
+"erased from our systems on X; from every processor by Y" and mean both halves.
+No provider API is called: none of the ones we use has one.
+
+### Added — HTTP
+
+- `POST /gdpr/api/v1/erasures` — the host's hook after its own soft-delete,
+  behind the `ERASURE_AUTHORIZER` callable setting (default staff-only; an
+  authorizer that cannot be imported, or that raises, refuses — an ownership
+  check that fails open is worse than none).
+- `GET /gdpr/api/v1/erasures/{id}` — state, per-owner receipts with counts,
+  subprocessor obligations, `fully_erased_by`.
+- `GET /gdpr/api/v1/me/erasures` — the caller's own pending deletions.
+- `POST/GET /gdpr/api/v1/dsar`, `PATCH /gdpr/api/v1/dsar/{id}`,
+  `GET /gdpr/api/v1/owners/health`.
+
+Five new error codes, declared with remediations and translated in every
+language the corpus ships: `error.400.gdpr.unknown_subject_type`,
+`error.400.gdpr.unknown_dsar_kind`, `error.403.gdpr.erasure_forbidden`,
+`error.404.gdpr.erasure_not_found`, `error.404.gdpr.dsar_not_found`.
+
+### Added — settings, and a registry for them
+
+`SUBJECT_TYPES`, `ERASURE_SLA_DAYS`, `OWNER_ALIVE_MAX_AGE_HOURS`,
+`ERASURE_AUTHORIZER`, `SUBPROCESSORS`, `DSAR_STAFF_EMAILS`. This module also
+gains its first **`CONFIG.MD`** — every key it reads, namespaced and flat, with
+a purpose, a default and the check that fires when it is unset. The registry
+did not exist before, which meant `stapel-config-lint` went green by having
+nothing to lint.
+
+`get_gdpr_beat_schedule()` gains `gdpr-data-owner-probe` and
+`gdpr-dsar-deadline-sweep`.
+
+### Tests
+
+189 → 261. Every state transition of the new machine, both `DATA_OWNERS`
+shapes, `W006` (never answered / stale / silent) and `W008` (with and without a
+database), requeue idempotency across repeated and overlapping windows, and the
+authorizer in all five of its states — default, custom, refusing, raising and
+unimportable — each failing closed.
+
+
 ### Added — `required_settings` in `docs/capabilities.json`
 
 `gdpr.E001` is boot-fatal when `STAPEL_GDPR["DATA_OWNERS"]` is empty, so
