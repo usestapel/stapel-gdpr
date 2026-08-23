@@ -1,5 +1,10 @@
 {
+  "error.400.gdpr.unknown_dsar_kind": "Неизвестный вид запроса о защите данных.",
+  "error.400.gdpr.unknown_subject_type": "Данные этого вида нельзя удалить через этот эндпоинт.",
   "error.403.gdpr.account_closed": "Эта учётная запись удаляется и больше не может использоваться.",
+  "error.403.gdpr.erasure_forbidden": "У вас нет прав запрашивать удаление этого объекта.",
+  "error.404.gdpr.dsar_not_found": "Запрос о защите данных не найден.",
+  "error.404.gdpr.erasure_not_found": "Запрос на удаление не найден.",
   "error.404.gdpr.export_not_found": "Запрос на экспорт не найден.",
   "error.404.gdpr.no_active_closure": "Незавершённый запрос на закрытие учётной записи не найден.",
   "error.409.gdpr.closure_already_pending": "Закрытие учётной записи уже выполняется.",

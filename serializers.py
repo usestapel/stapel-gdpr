@@ -1,5 +1,12 @@
 from stapel_core.django.api.serializers import StapelDataclassSerializer
-from .dto import ClosureStatusDTO, ExportRequestDTO, ExportStatusDTO
+from .dto import (
+    ClosureStatusDTO,
+    DataOwnerHealthDTO,
+    DsarStatusDTO,
+    ErasureStatusDTO,
+    ExportRequestDTO,
+    ExportStatusDTO,
+)
 
 
 class ExportRequestSerializer(StapelDataclassSerializer):
@@ -15,3 +22,18 @@ class ExportStatusSerializer(StapelDataclassSerializer):
 class ClosureStatusSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = ClosureStatusDTO
+
+
+class ErasureStatusSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = ErasureStatusDTO
+
+
+class DsarStatusSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = DsarStatusDTO
+
+
+class DataOwnerHealthSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = DataOwnerHealthDTO

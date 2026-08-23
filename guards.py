@@ -25,7 +25,46 @@ from rest_framework import permissions
 
 from .lifecycle import is_access_denied
 
-__all__ = ["AccountClosureGuardMiddleware", "AccountNotClosed"]
+__all__ = [
+    "AccountClosureGuardMiddleware",
+    "AccountNotClosed",
+    "erasure_authorized",
+]
+
+
+def erasure_authorized(request, subject_type: str, subject_key: str) -> bool:
+    """Whether *request* may open an erasure for this subject.
+
+    ``POST /erasures`` erases whatever the caller names, so the default is
+    the only safe one this library can pick: staff only. A host plugs its own
+    ownership predicate in as
+    ``STAPEL_GDPR["ERASURE_AUTHORIZER"] = "myapp.gdpr.owns_subject"``, a
+    callable ``(request, subject_type, subject_key) -> bool`` — only the host
+    knows whether this user owns that recording.
+
+    An authorizer that cannot be imported or that raises refuses the
+    request: an ownership check that fails open is worse than none, because
+    it looks like one.
+    """
+    import logging
+
+    from django.utils.module_loading import import_string
+
+    from .conf import gdpr_settings
+
+    logger = logging.getLogger(__name__)
+    dotted = str(gdpr_settings.ERASURE_AUTHORIZER or "")
+    if not dotted:
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and user.is_staff)
+    try:
+        return bool(import_string(dotted)(request, subject_type, subject_key))
+    except ImportError as e:
+        logger.error('STAPEL_GDPR["ERASURE_AUTHORIZER"]=%r cannot be imported: %s', dotted, e)
+        return False
+    except Exception as e:
+        logger.error('STAPEL_GDPR["ERASURE_AUTHORIZER"]=%r raised: %s', dotted, e)
+        return False
 
 
 class AccountNotClosed(permissions.BasePermission):

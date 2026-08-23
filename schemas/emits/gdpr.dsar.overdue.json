@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.dsar.overdue",
+  "description": "A data-subject request passed its acknowledgement or resolution deadline. Subscribe to page whoever owns the privacy queue — the statutory clock does not stop for an unread admin page.",
+  "type": "object",
+  "required": ["dsar_id", "kind", "deadline"],
+  "properties": {
+    "dsar_id":       { "type": "integer" },
+    "kind":          { "type": "string", "enum": ["access", "erasure", "rectification", "portability"] },
+    "channel":       { "type": "string", "enum": ["app", "form", "email"] },
+    "state":         { "type": "string" },
+    "deadline":      { "type": "string", "enum": ["acknowledgement", "resolution"] },
+    "due_at":        { "type": "string", "format": "date-time" },
+    "received_at":   { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

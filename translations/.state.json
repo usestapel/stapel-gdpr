@@ -1,7 +1,27 @@
 {
   "errors.es": {
+    "error.400.gdpr.unknown_dsar_kind": {
+      "hash": "a86ce618389444b1",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.gdpr.unknown_subject_type": {
+      "hash": "d2ef8f9d140658e4",
+      "origin": "seed:stapel-builtin"
+    },
     "error.403.gdpr.account_closed": {
       "hash": "365347d2841a0dd5",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.403.gdpr.erasure_forbidden": {
+      "hash": "b98e907190ac0c8e",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.gdpr.dsar_not_found": {
+      "hash": "ec93a4b959a4af62",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.gdpr.erasure_not_found": {
+      "hash": "7c6482431e843a4f",
       "origin": "seed:stapel-builtin"
     },
     "error.404.gdpr.export_not_found": {
@@ -42,8 +62,28 @@
     }
   },
   "errors.ru": {
+    "error.400.gdpr.unknown_dsar_kind": {
+      "hash": "a86ce618389444b1",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.400.gdpr.unknown_subject_type": {
+      "hash": "d2ef8f9d140658e4",
+      "origin": "seed:stapel-builtin"
+    },
     "error.403.gdpr.account_closed": {
       "hash": "365347d2841a0dd5",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.403.gdpr.erasure_forbidden": {
+      "hash": "b98e907190ac0c8e",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.gdpr.dsar_not_found": {
+      "hash": "ec93a4b959a4af62",
+      "origin": "seed:stapel-builtin"
+    },
+    "error.404.gdpr.erasure_not_found": {
+      "hash": "7c6482431e843a4f",
       "origin": "seed:stapel-builtin"
     },
     "error.404.gdpr.export_not_found": {

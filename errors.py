@@ -10,6 +10,11 @@ ERR_410_DOWNLOAD_EXPIRED    = 'error.410.gdpr.download_expired'
 ERR_410_DOWNLOAD_CONSUMED   = 'error.410.gdpr.download_consumed'
 ERR_425_EXPORT_NOT_READY    = 'error.425.gdpr.export_not_ready'
 ERR_503_CLOSURE_UNAVAILABLE = 'error.503.gdpr.closure_unavailable'
+ERR_400_UNKNOWN_SUBJECT     = 'error.400.gdpr.unknown_subject_type'
+ERR_400_UNKNOWN_DSAR_KIND   = 'error.400.gdpr.unknown_dsar_kind'
+ERR_403_ERASURE_FORBIDDEN   = 'error.403.gdpr.erasure_forbidden'
+ERR_404_ERASURE_NOT_FOUND   = 'error.404.gdpr.erasure_not_found'
+ERR_404_DSAR_NOT_FOUND      = 'error.404.gdpr.dsar_not_found'
 
 _ERRORS = {
     ERR_409_EXPORT_COOLDOWN:   'A data export was already requested in the last 30 days.',
@@ -22,8 +27,22 @@ _ERRORS = {
     ERR_410_DOWNLOAD_CONSUMED: 'Download link was already used. Request a new export.',
     ERR_425_EXPORT_NOT_READY:  'Export is still being prepared.',
     ERR_503_CLOSURE_UNAVAILABLE: 'Account closure is temporarily unavailable. Please retry later.',
+    ERR_400_UNKNOWN_SUBJECT:   'This kind of data cannot be erased through this endpoint.',
+    ERR_400_UNKNOWN_DSAR_KIND: 'Unknown kind of data-protection request.',
+    ERR_403_ERASURE_FORBIDDEN: 'You are not allowed to request erasure of this item.',
+    ERR_404_ERASURE_NOT_FOUND: 'Erasure request not found.',
+    ERR_404_DSAR_NOT_FOUND:    'Data-protection request not found.',
 }
-register_service_errors(_ERRORS)
+register_service_errors(
+    _ERRORS,
+    remediation={
+        # A subject type or a request kind outside the declared vocabulary is
+        # a client-side mistake; the authorizer's refusal is not user-fixable.
+        ERR_400_UNKNOWN_SUBJECT:   'fix_input',
+        ERR_400_UNKNOWN_DSAR_KIND: 'fix_input',
+        ERR_403_ERASURE_FORBIDDEN: 'contact_support',
+    },
+)
 
 
 class SessionRevocationUnavailable(RuntimeError):

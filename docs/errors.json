@@ -146,6 +146,22 @@
     "owner": "stapel_core"
   },
   {
+    "code": "error.400.gdpr.unknown_dsar_kind",
+    "status": 400,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Unknown kind of data-protection request.",
+    "owner": "stapel_gdpr"
+  },
+  {
+    "code": "error.400.gdpr.unknown_subject_type",
+    "status": 400,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "This kind of data cannot be erased through this endpoint.",
+    "owner": "stapel_gdpr"
+  },
+  {
     "code": "error.400.invalid_ad_id",
     "status": 400,
     "params": [],
@@ -210,6 +226,14 @@
     "owner": "stapel_gdpr"
   },
   {
+    "code": "error.403.gdpr.erasure_forbidden",
+    "status": 403,
+    "params": [],
+    "remediation": "contact_support",
+    "en": "You are not allowed to request erasure of this item.",
+    "owner": "stapel_gdpr"
+  },
+  {
     "code": "error.403.network_blocked",
     "status": 403,
     "params": [],
@@ -240,6 +264,22 @@
     "remediation": "retry",
     "en": "Listing not found",
     "owner": "stapel_core"
+  },
+  {
+    "code": "error.404.gdpr.dsar_not_found",
+    "status": 404,
+    "params": [],
+    "remediation": "retry",
+    "en": "Data-protection request not found.",
+    "owner": "stapel_gdpr"
+  },
+  {
+    "code": "error.404.gdpr.erasure_not_found",
+    "status": 404,
+    "params": [],
+    "remediation": "retry",
+    "en": "Erasure request not found.",
+    "owner": "stapel_gdpr"
   },
   {
     "code": "error.404.gdpr.export_not_found",
@@ -434,5 +474,13 @@
     "remediation": "retry",
     "en": "Account closure is temporarily unavailable. Please retry later.",
     "owner": "stapel_gdpr"
+  },
+  {
+    "code": "error.503.mandate_unavailable",
+    "status": 503,
+    "params": [],
+    "remediation": "retry",
+    "en": "Cannot verify workspace mandate right now",
+    "owner": "stapel_core"
   }
 ]

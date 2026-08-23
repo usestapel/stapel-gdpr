@@ -19,10 +19,25 @@ from stapel_core.django.api.errors import (
     error_500_internal,
 )
 from stapel_core.django.api.permissions import IsServiceRequest
+from stapel_core.django.captcha import captcha_protected
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
-from .dto import ClosureStatusDTO, ExportRequestDTO, ExportStatusDTO
+from .dto import (
+    ClosureStatusDTO,
+    DataOwnerHealthDTO,
+    DsarStatusDTO,
+    ErasurePartDTO,
+    ErasureStatusDTO,
+    ExportRequestDTO,
+    ExportStatusDTO,
+    SubprocessorObligationDTO,
+)
 from .errors import (
+    ERR_400_UNKNOWN_DSAR_KIND,
+    ERR_400_UNKNOWN_SUBJECT,
+    ERR_403_ERASURE_FORBIDDEN,
+    ERR_404_DSAR_NOT_FOUND,
+    ERR_404_ERASURE_NOT_FOUND,
     ERR_404_EXPORT_NOT_FOUND,
     ERR_404_NO_ACTIVE_CLOSURE,
     ERR_409_CLOSURE_PENDING,
@@ -34,11 +49,21 @@ from .errors import (
     ERR_503_CLOSURE_UNAVAILABLE,
     SessionRevocationUnavailable,
 )
-from .guards import AccountNotClosed
-from .models import AccountClosureRequest, DataExportRequest, hash_download_token
+from .guards import AccountNotClosed, erasure_authorized
+from .models import (
+    AccountClosureRequest,
+    DataExportRequest,
+    DataOwnerHealth,
+    DsarRequest,
+    ErasureRequest,
+    hash_download_token,
+)
 from .orchestrator import gdpr_orchestrator
 from .serializers import (
     ClosureStatusSerializer,
+    DataOwnerHealthSerializer,
+    DsarStatusSerializer,
+    ErasureStatusSerializer,
     ExportRequestSerializer,
     ExportStatusSerializer,
 )
@@ -434,3 +459,407 @@ class ExportPartReadyView(GDPRAPIView):
             return error_500_internal()
 
         return StapelResponse(status=204)
+
+
+# =============================================================================
+# Subject-scoped erasure — GDPR Art. 17 for anything that is not an account
+# =============================================================================
+
+
+def _erasure_dto(request_row: ErasureRequest) -> ErasureStatusDTO:
+    """One erasure, with everything a product needs to explain the wait."""
+    return ErasureStatusDTO(
+        request_id=request_row.pk,
+        subject_type=request_row.subject_type,
+        subject_key=request_row.subject_key,
+        workspace_id=request_row.workspace_id,
+        state=request_row.state,
+        origin=request_row.origin,
+        requested_at=request_row.requested_at.isoformat(),
+        due_at=request_row.due_at.isoformat(),
+        fully_erased_by=request_row.fully_erased_by.isoformat(),
+        completed_at=(
+            request_row.completed_at.isoformat() if request_row.completed_at else None
+        ),
+        grace_ends_at=(
+            request_row.grace_ends_at.isoformat() if request_row.grace_ends_at else None
+        ),
+        parts=[
+            ErasurePartDTO(
+                owner=part.owner,
+                state=part.state,
+                receipt_at=part.receipt_at.isoformat() if part.receipt_at else None,
+                receipt_id=part.receipt_id,
+                counts=part.counts or {},
+            )
+            for part in request_row.parts.all()
+        ],
+        obligations=[
+            SubprocessorObligationDTO(
+                provider=obligation.provider,
+                window_days=obligation.window_days,
+                due_at=obligation.due_at.isoformat(),
+                state=obligation.state,
+            )
+            for obligation in request_row.obligations.all()
+        ],
+        unreceipted_owners=request_row.unreceipted_owners,
+    )
+
+
+class ErasureRequestView(GDPRAPIView):
+    """The host's "erase this entity" hook, after its own soft-delete.
+
+    Deliberately not an ownership check of its own: only the host knows
+    whether this user owns that recording. The check is the
+    ``ERASURE_AUTHORIZER`` seam, and it defaults to staff-only rather than
+    to a permissive guess (``guards.erasure_authorized``).
+    """
+
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    request_serializer_class = None
+    response_serializer_class = ErasureStatusSerializer
+
+    @extend_schema(
+        summary="Request erasure of one subject",
+        description=(
+            "Opens an erasure for a subject the host has already removed from "
+            "its UI: one receipt slot per data owner that claims this subject "
+            "type, a purge SLA in `due_at`, and a `gdpr.erasure.requested` "
+            "action. Authorization is the host's `ERASURE_AUTHORIZER` "
+            "callable; the default is staff only."
+        ),
+        request=inline_serializer(
+            name="GDPRErasureRequest",
+            fields={
+                "subject_type": serializers.CharField(
+                    help_text='One of STAPEL_GDPR["SUBJECT_TYPES"], e.g. "recording".'
+                ),
+                "subject_key": serializers.CharField(
+                    help_text="The host's own id for the subject."
+                ),
+                "workspace_id": serializers.CharField(
+                    required=False, allow_blank=True,
+                    help_text="Workspace the subject belongs to, for owners that partition by it.",
+                ),
+            },
+        ),
+        responses={
+            202: ErasureStatusSerializer,
+            400: StapelErrorSerializer,
+            403: StapelErrorSerializer,
+        },
+        tags=["GDPR"],
+    )
+    def post(self, request: Request):  # noqa: R007
+        subject_type = str(request.data.get("subject_type", "")).strip()
+        subject_key = str(request.data.get("subject_key", "")).strip()
+        if not subject_type or not subject_key:
+            return StapelErrorResponse(400, ERR_400_BAD_REQUEST)
+
+        if not erasure_authorized(request, subject_type, subject_key):
+            return StapelErrorResponse(403, ERR_403_ERASURE_FORBIDDEN)
+
+        try:
+            erasure = gdpr_orchestrator.request_erasure(
+                subject_type,
+                subject_key,
+                workspace_id=(request.data.get("workspace_id") or None),
+                requested_by=request.user.pk,
+            )
+        except ValueError as e:
+            if str(e) == "unknown_subject_type":
+                return StapelErrorResponse(400, ERR_400_UNKNOWN_SUBJECT)
+            return error_500_internal()
+
+        return StapelResponse(
+            self.get_response_serializer_class()(_erasure_dto(erasure)), status=202,
+        )
+
+
+class ErasureStatusView(GDPRAPIView):
+    """State, receipts, obligations and `fully_erased_by` for one erasure."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ErasureStatusSerializer
+
+    @extend_schema(
+        summary="Get erasure status",
+        responses={200: ErasureStatusSerializer, 404: StapelErrorSerializer},
+        tags=["GDPR"],
+    )
+    def get(self, request: Request, request_id: int):  # noqa: R007
+        erasure = ErasureRequest.objects.filter(pk=request_id).first()
+        if erasure is None:
+            return StapelErrorResponse(404, ERR_404_ERASURE_NOT_FOUND)
+        # A requester sees their own; anyone else needs the same authority
+        # that could have opened it. Otherwise the endpoint enumerates every
+        # deletion in the deployment by integer id.
+        if str(erasure.requested_by) != str(request.user.pk) and not erasure_authorized(
+            request, erasure.subject_type, erasure.subject_key,
+        ):
+            return StapelErrorResponse(404, ERR_404_ERASURE_NOT_FOUND)
+        return StapelResponse(self.get_response_serializer_class()(_erasure_dto(erasure)))
+
+
+class MyErasuresView(GDPRAPIView):
+    """The caller's own erasures — the "pending deletion" list a UI shows."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    request_serializer_class = None
+    response_serializer_class = ErasureStatusSerializer
+
+    @extend_schema(
+        summary="List my erasure requests",
+        responses={200: ErasureStatusSerializer(many=True)},
+        tags=["GDPR"],
+    )
+    def get(self, request: Request):  # noqa: R007
+        rows = ErasureRequest.objects.filter(
+            requested_by=request.user.pk,
+        ).prefetch_related("parts", "obligations")
+        serializer = self.get_response_serializer_class()(
+            [_erasure_dto(row) for row in rows], many=True,
+        )
+        return StapelResponse(serializer)
+
+
+# =============================================================================
+# Data owner health — silence, made visible
+# =============================================================================
+
+
+class DataOwnerHealthView(GDPRAPIView):
+    """Which declared owners are answering, and which have gone quiet."""
+
+    permission_classes = [permissions.IsAdminUser]
+    request_serializer_class = None
+    response_serializer_class = DataOwnerHealthSerializer
+
+    @extend_schema(
+        summary="Data owner liveness table (staff)",
+        description=(
+            "The table behind the `gdpr.W006` boot warning: every declared "
+            "data owner, when it last answered `gdpr.owner.probe`, and "
+            "whether the subjects it claims match the inventory."
+        ),
+        responses={200: DataOwnerHealthSerializer(many=True)},
+        tags=["GDPR"],
+    )
+    def get(self, request: Request):  # noqa: R007
+        from datetime import timedelta
+
+        from .conf import gdpr_settings
+        from .owners import data_owner_report
+
+        cutoff = timezone.now() - timedelta(
+            hours=float(gdpr_settings.OWNER_ALIVE_MAX_AGE_HOURS or 48),
+        )
+        rows = {row.owner: row for row in DataOwnerHealth.objects.all()}
+        report = data_owner_report()
+
+        dtos = []
+        for owner in report.owners:
+            row = rows.get(owner.name)
+            last_alive = row.last_alive_at if row else None
+            dtos.append(
+                DataOwnerHealthDTO(
+                    owner=owner.name,
+                    alive=bool(last_alive and last_alive >= cutoff),
+                    last_alive_at=last_alive.isoformat() if last_alive else None,
+                    last_probe_at=(
+                        row.last_probe_at.isoformat()
+                        if row and row.last_probe_at else None
+                    ),
+                    declared_subject_types=list(owner.subjects),
+                    answered_subject_types=list(row.answered_subject_types) if row else [],
+                )
+            )
+        return StapelResponse(self.get_response_serializer_class()(dtos, many=True))
+
+
+# =============================================================================
+# DSAR intake — GDPR Art. 12/15/16/17/20
+# =============================================================================
+
+
+def _dsar_dto(dsar: DsarRequest) -> DsarStatusDTO:
+    return DsarStatusDTO(
+        request_id=dsar.pk,
+        kind=dsar.kind,
+        channel=dsar.channel,
+        subject_email=dsar.subject_email,
+        state=dsar.state,
+        received_at=dsar.received_at.isoformat(),
+        ack_due_at=dsar.ack_due_at.isoformat(),
+        ack_sent_at=dsar.ack_sent_at.isoformat() if dsar.ack_sent_at else None,
+        resolve_due_at=dsar.resolve_due_at.isoformat(),
+        erasure_request_id=dsar.erasure_request_id,
+        export_request_id=dsar.export_request_id,
+        note=dsar.note,
+    )
+
+
+class DsarView(GDPRAPIView):
+    """Intake and queue for data-subject requests.
+
+    ``POST`` takes both an authenticated app request and an anonymous one
+    from a public /privacy form — the form is the channel a regulator
+    expects to exist, and it cannot require a login. The anonymous variant
+    goes through the core's tiered captcha policy
+    (``@captcha_protected``); an unconfigured captcha backend leaves the
+    form open exactly as before, which is a host's decision to make.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    request_serializer_class = None
+    response_serializer_class = DsarStatusSerializer
+
+    @extend_schema(
+        summary="Submit a data-protection request",
+        description=(
+            "Records the request, sends the acknowledgement that satisfies "
+            "the three-business-day clock, notifies staff, and — for a "
+            "request matched to an account — starts the machine that answers "
+            "it (erasure: the cancellable closure; access/portability: a data "
+            "export). Anonymous submissions require a captcha token when a "
+            "captcha backend is configured."
+        ),
+        request=inline_serializer(
+            name="GDPRDsarRequest",
+            fields={
+                "kind": serializers.ChoiceField(
+                    choices=[k for k, _ in DsarRequest.KIND_CHOICES],
+                    help_text="access, erasure, rectification or portability.",
+                ),
+                "email": serializers.EmailField(
+                    required=False,
+                    help_text="Required for anonymous submissions; ignored when authenticated.",
+                ),
+                "note": serializers.CharField(
+                    required=False, allow_blank=True,
+                    help_text="What the subject is asking for, in their words.",
+                ),
+                "captcha_token": serializers.CharField(
+                    required=False, allow_blank=True,
+                    help_text="Captcha token for anonymous submissions.",
+                ),
+            },
+        ),
+        responses={
+            201: DsarStatusSerializer,
+            400: StapelErrorSerializer,
+        },
+        tags=["GDPR"],
+    )
+    @captcha_protected(action="gdpr_dsar")
+    def post(self, request: Request):  # noqa: R007
+        from .dsar import create_dsar
+
+        kind = str(request.data.get("kind", "")).strip()
+        if kind not in {k for k, _ in DsarRequest.KIND_CHOICES}:
+            return StapelErrorResponse(400, ERR_400_UNKNOWN_DSAR_KIND)
+
+        user = getattr(request, "user", None)
+        authenticated = bool(user and user.is_authenticated)
+        email = (
+            getattr(user, "email", "") if authenticated
+            else str(request.data.get("email", "")).strip()
+        )
+        if not email:
+            return StapelErrorResponse(400, ERR_400_BAD_REQUEST)
+
+        dsar = create_dsar(
+            kind=kind,
+            subject_email=email,
+            channel=DsarRequest.CHANNEL_APP if authenticated else DsarRequest.CHANNEL_FORM,
+            user_id=user.pk if authenticated else None,
+            note=str(request.data.get("note", "")),
+        )
+        return StapelResponse(self.get_response_serializer_class()(_dsar_dto(dsar)), status=201)
+
+    @extend_schema(
+        summary="List data-protection requests (staff)",
+        responses={200: DsarStatusSerializer(many=True)},
+        tags=["GDPR"],
+    )
+    def get(self, request: Request):  # noqa: R007
+        user = getattr(request, "user", None)
+        if not (user and user.is_authenticated and user.is_staff):
+            return StapelErrorResponse(403, ERR_403_FORBIDDEN)
+        rows = DsarRequest.objects.all()
+        serializer = self.get_response_serializer_class()(
+            [_dsar_dto(row) for row in rows], many=True,
+        )
+        return StapelResponse(serializer)
+
+
+class DsarDetailView(GDPRAPIView):
+    """Staff triage of one request: state, note, and matching it to a person."""
+
+    permission_classes = [permissions.IsAdminUser]
+    request_serializer_class = None
+    response_serializer_class = DsarStatusSerializer
+
+    @extend_schema(
+        summary="Update a data-protection request (staff)",
+        description=(
+            "Setting `user_id` on a request that arrived anonymously matches "
+            "it to an account and wires it to the mechanism that answers it — "
+            "intake deliberately refuses to do that itself, since turning an "
+            "unverified email into an erasure is a deletion oracle."
+        ),
+        request=inline_serializer(
+            name="GDPRDsarPatch",
+            fields={
+                "state": serializers.ChoiceField(
+                    choices=[s for s, _ in DsarRequest.STATE_CHOICES], required=False,
+                ),
+                "note": serializers.CharField(required=False, allow_blank=True),
+                "user_id": serializers.CharField(required=False, allow_blank=True),
+            },
+        ),
+        responses={200: DsarStatusSerializer, 404: StapelErrorSerializer},
+        tags=["GDPR"],
+    )
+    def patch(self, request: Request, dsar_id: int):  # noqa: R007
+        from .dsar import wire_dsar
+
+        dsar = DsarRequest.objects.filter(pk=dsar_id).first()
+        if dsar is None:
+            return StapelErrorResponse(404, ERR_404_DSAR_NOT_FOUND)
+
+        updated = []
+        state = request.data.get("state")
+        if state is not None:
+            if state not in {s for s, _ in DsarRequest.STATE_CHOICES}:
+                return StapelErrorResponse(400, ERR_400_BAD_REQUEST)
+            dsar.state = state
+            updated.append("state")
+        if "note" in request.data:
+            dsar.note = str(request.data.get("note") or "")
+            updated.append("note")
+        matched = False
+        if request.data.get("user_id"):
+            dsar.user_id = request.data["user_id"]
+            updated.append("user_id")
+            matched = True
+        if updated:
+            dsar.save(update_fields=updated)
+        if matched:
+            wire_dsar(dsar)
+            dsar.refresh_from_db()
+
+        return StapelResponse(self.get_response_serializer_class()(_dsar_dto(dsar)))
+
+    @extend_schema(
+        summary="Get one data-protection request (staff)",
+        responses={200: DsarStatusSerializer, 404: StapelErrorSerializer},
+        tags=["GDPR"],
+    )
+    def get(self, request: Request, dsar_id: int):  # noqa: R007
+        dsar = DsarRequest.objects.filter(pk=dsar_id).first()
+        if dsar is None:
+            return StapelErrorResponse(404, ERR_404_DSAR_NOT_FOUND)
+        return StapelResponse(self.get_response_serializer_class()(_dsar_dto(dsar)))
