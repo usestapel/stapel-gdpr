@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.deletion_cancelled",
+  "description": "Account closure cancelled during the grace period. The mirror of user.deletion_initiated: the account is active again and every reversible reaction taken on the initiation (suppressed notifications, hidden content, suspended memberships) must be lifted.",
+  "type": "object",
+  "required": ["user_id", "cancelled_at"],
+  "properties": {
+    "user_id":      { "type": "string", "format": "uuid" },
+    "cancelled_at": { "type": "string", "format": "date-time" },
+    "trigger":      { "type": "string", "enum": ["manual", "inactivity", "platform"] }
+  },
+  "additionalProperties": false
+}

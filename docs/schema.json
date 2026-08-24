@@ -591,7 +591,7 @@
     "/gdpr/api/v1/user/account/cancel-close": {
       "post": {
         "operationId": "gdpr_api_v1_user_account_cancel_close_create",
-        "description": "Base view exposing serializer seams.\n\nEvery concrete view declares ``request_serializer_class`` /\n``response_serializer_class`` (``None`` when that direction carries no\nserialized payload). Subclasses may swap either class attribute — or\noverride the getters — to customize the request/response envelopes\nwithout rewriting the method bodies.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
+        "description": "Stop a closure that is still inside its grace period.\n\nThe account is reactivated and a ``user.deletion_cancelled`` comm action\nis emitted — the mirror of the ``user.deletion_initiated`` that started\nthe closure, so every consumer that took a reversible action on the\ninitiation (suppressed notifications, hidden content, suspended\nmemberships) is told to lift it instead of waiting for its next sync.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
         "summary": "Cancel account closure during grace period",
         "tags": [
           "GDPR"

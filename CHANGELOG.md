@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-08-24
+
+Additive. `cancel_closure()` now emits **`user.deletion_cancelled`** — the
+mirror of the `user.deletion_initiated` it undoes.
+
+The closure path always had two halves and only ever announced one. A consumer
+that reacted to `user.deletion_initiated` the way the contract asks — a
+reversible reaction: suppress notifications, hide content, suspend a
+membership — was never told when the user changed their mind inside the grace
+period. It recovered on its next sync with the source of truth, whenever that
+was, so a cancelled closure went on punishing a live account for hours.
+
+Mutation and emit are one `mutate_and_emit()` unit: a failing emit rolls the
+cancellation back rather than leaving a reactivated account nobody downstream
+was told about (`test_failing_emit_rolls_the_cancellation_back`).
+
+Payload: `user_id` (uuid string), `cancelled_at`, `trigger` — schema in
+`schemas/emits/user.deletion_cancelled.json`.
+
+Patch, not minor: nothing that existed changed shape, and no consumer has to
+adapt. **The 0.6.0 slot is deliberately left alone** — `user.deleted` is
+published as "removed in 0.6.0", and it cannot be removed here: stapel-profiles
+still carries `schemas/consumes/user.deleted.json`, so that removal is a fleet
+cutover and an owner decision, not a side effect of adding an event.
+
+CI now also runs the Django floor (5.1, 5.2) the dependency graph declares,
+instead of latest only.
+
 ## [0.5.2] — 2026-08-23
 
 Contract triad: docs/schema.json (13 paths/15 operations under /gdpr/api/v1/)

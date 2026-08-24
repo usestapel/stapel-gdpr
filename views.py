@@ -348,6 +348,15 @@ class AccountCloseView(GDPRAPIView):
 
 
 class AccountCancelCloseView(GDPRAPIView):
+    """Stop a closure that is still inside its grace period.
+
+    The account is reactivated and a ``user.deletion_cancelled`` comm action
+    is emitted — the mirror of the ``user.deletion_initiated`` that started
+    the closure, so every consumer that took a reversible action on the
+    initiation (suppressed notifications, hidden content, suspended
+    memberships) is told to lift it instead of waiting for its next sync.
+    """
+
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer

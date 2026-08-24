@@ -12,6 +12,18 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # Base rows take whatever Django the dependency graph resolves —
+        # latest. The include rows pin the FLOOR releases stapel-core's
+        # `Django>=5.1,<6.1` claims support for: until they ran, "supported
+        # since 5.1" was a statement nothing had ever executed. Pinned on
+        # 3.12 (the contract/monolith pin) rather than crossed with every
+        # interpreter — Django 5.1 predates 3.13/3.14 support entirely, so
+        # the full product would be red for reasons that are not ours.
+        include:
+          - python-version: "3.12"
+            django-version: "5.1"
+          - python-version: "3.12"
+            django-version: "5.2"
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +37,12 @@ jobs:
 
       - name: Install
         run: pip install -e ".[all]" || pip install -e .
+
+      - name: Pin Django to the matrix floor
+        if: matrix.django-version != ''
+        run: |
+          pip install "Django~=${{ matrix.django-version }}.0"
+          python -c "import django; print('Django', django.get_version())"
 
       - name: Lint
         run: |

@@ -122,6 +122,7 @@ Comm **Actions emitted** (transactional outbox, at-least-once; schemas in `schem
 | Action | Payload | When |
 |---|---|---|
 | `user.deletion_initiated` | `user_id`, `trigger` (`manual`\|`inactivity`\|`platform`), `grace_ends_at` | `initiate_closure` — grace period starts, account deactivated |
+| `user.deletion_cancelled` | `user_id`, `cancelled_at`, `trigger` | `cancel_closure` — the closure was stopped inside its grace period; lift every reversible reaction taken on `user.deletion_initiated` |
 | `gdpr.erasure.requested` | `request_id`, `correlation_id`, `subject_type`, `subject_key`, `workspace_id`, `requested_by`, `origin`, `due_at` | Every new erasure, account included — the action owner libraries subscribe to |
 | `gdpr.erasure.timeout` | `request_id`, `correlation_id`, `subject_type`, `subject_key`, `owners`, `due_at` | `sweep_deletion_deadlines` — at least one owner never confirmed, so the request cannot be certified. Subscribe to alert |
 | `gdpr.owner.probe` | `correlation_id` | `probe_data_owners` (daily) — answer with `gdpr.owner.alive` from your erasure subscriber |
@@ -249,11 +250,11 @@ This module defines and sends **no Django signals**. Business milestones travel 
 - **Do not treat `is_active` as "is this account closed?"** — it is a plain boolean any JWT-to-DB user sync can write back. Ask `stapel_gdpr.is_access_denied(user_id)` / `access_state(user_id)`, which read the closure row.
 - **Do not deactivate a user with `QuerySet.update()`** — raw SQL fires no `pre_save`/`post_save`, so activation observers never run and the deactivation propagates nowhere. `lifecycle.set_active` writes through the instance.
 - **Do not put the export download token in a URL** (query string or path): it lands in access logs, browser history and `Referer`. It travels in the POST body, is spent once, and dies with the archive.
-- **Do not rely on a `user.deletion_cancelled` event — it does not exist** (see limitation below).
+- **Do not treat `user.deletion_initiated` as final.** Its mirror `user.deletion_cancelled` (since 0.6.0) says the account came back; a consumer that reacts to the first and ignores the second keeps a live user suppressed.
 
-## Known limitation
+## Cancellation
 
-There is **no `user.deletion_cancelled` comm action**. `cancel_closure()` reactivates the local user (`is_active=True`) and updates the closure row, but emits nothing — consumers that reacted to `user.deletion_initiated` (e.g. stapel-notifications deactivating a user's contacts) are not told about the cancellation and only recover on their next sync with the source of truth. Design consumer reactions to `user.deletion_initiated` to be self-healing. Adding the event is an upstream contribution.
+`cancel_closure()` reactivates the local user (`is_active=True`), flips the closure row to `cancelled` and emits `user.deletion_cancelled` — mutation and emit in ONE `mutate_and_emit()` unit, so a failing emit rolls the cancellation back rather than leaving a reactivated account nobody downstream was told about. Consumers that took a reversible action on `user.deletion_initiated` (stapel-notifications deactivating contacts, a service hiding content) subscribe to this to lift it. Before 0.6.0 the cancellation emitted nothing and those consumers recovered only on their next sync with the source of truth.
 
 ## App-layer override vs upstream contribution — rule of thumb
 

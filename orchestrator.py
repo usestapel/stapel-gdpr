@@ -501,19 +501,44 @@ class GDPROrchestrator:
         return closure
 
     def cancel_closure(self, user_id: UserId) -> AccountClosureRequest:
+        """Cancel a closure still inside its grace period.
+
+        Emits ``user.deletion_cancelled`` — the mirror of the
+        ``user.deletion_initiated`` this undoes. Without it a remote
+        consumer that reacted to the initiation (stapel-notifications
+        deactivating contacts, a service hiding content) had no way of
+        learning the account came back and recovered only on its next sync
+        with the source of truth, so a cancelled closure kept punishing the
+        user for as long as that sync took.
+
+        Mutation and emit are ONE outbox unit via ``mutate_and_emit()``: a
+        failing emit rolls the cancellation back rather than leaving a
+        reactivated account nobody downstream was told about.
+        """
         closure = AccountClosureRequest.objects.filter(
             user_id=user_id, status=AccountClosureRequest.STATUS_GRACE
         ).first()
         if not closure:
             raise ValueError('no_active_closure')
 
-        with transaction.atomic():
+        from stapel_core.comm import mutate_and_emit
+
+        with mutate_and_emit() as emit:
             closure.status       = AccountClosureRequest.STATUS_CANCELLED
             closure.cancelled_at = timezone.now()
             closure.save(update_fields=['status', 'cancelled_at'])
             # Same seam as the deactivation, so ``user.reactivated`` fires and
             # consumers that suspended memberships lift them again.
             lifecycle.set_active(user_id, True)
+            emit(
+                'user.deletion_cancelled',
+                {
+                    'user_id': str(user_id),
+                    'cancelled_at': closure.cancelled_at.isoformat(),
+                    'trigger': closure.trigger,
+                },
+                key=str(user_id),
+            )
         return closure
 
     def execute_deletion(self, closure: AccountClosureRequest) -> None:

@@ -331,3 +331,96 @@ def test_set_active_is_idempotent(user):
     assert set_active(user.pk, False) is True
     assert set_active(user.pk, False) is False  # already there: no event
     assert set_active(uuid.uuid4(), False) is False
+
+
+DELETION_CANCELLED_ACTION = "user.deletion_cancelled"
+
+
+@pytest.fixture
+def captured_cancellation_events():
+    """Subscribe to user.deletion_cancelled and unsubscribe afterwards.
+
+    Same reason as ``captured_revocation_events``: the action registry is
+    process-global, so a leaked subscriber outlives the test that made it.
+    """
+    from stapel_core.comm import action_registry, subscribe_action
+
+    captured = []
+    subscribe_action(DELETION_CANCELLED_ACTION, captured.append)
+    yield captured
+    action_registry._subscribers.get(DELETION_CANCELLED_ACTION, []).clear()
+
+
+@pytest.mark.django_db
+class TestCancellationIsAnnounced:
+    """A cancelled closure must reach the consumers the initiation reached.
+
+    Before this event a consumer that deactivated its own copy of the user on
+    ``user.deletion_initiated`` was never told the account came back, and
+    recovered only on its next sync with the source of truth.
+    """
+
+    def test_cancel_emits_deletion_cancelled(
+        self, user, revocations, captured_cancellation_events,
+    ):
+        captured = captured_cancellation_events
+        gdpr_orchestrator.initiate_closure(user.pk, trigger="manual")
+        assert captured == []
+
+        gdpr_orchestrator.cancel_closure(user.pk)
+
+        assert [e.payload["user_id"] for e in captured] == [str(user.pk)]
+        assert captured[0].payload["trigger"] == "manual"
+        assert captured[0].payload["cancelled_at"]
+
+    def test_event_is_schema_valid(
+        self, user, revocations, captured_cancellation_events,
+    ):
+        import json
+        from pathlib import Path
+
+        import jsonschema
+
+        import stapel_gdpr
+
+        captured = captured_cancellation_events
+        gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.cancel_closure(user.pk)
+
+        schema = json.loads(
+            (Path(stapel_gdpr.__file__).parent / "schemas" / "emits"
+             / "user.deletion_cancelled.json").read_text()
+        )
+        jsonschema.validate(captured[0].payload, schema)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**captured[0].payload, "user_id": 42}, schema)
+
+    def test_failing_emit_rolls_the_cancellation_back(
+        self, user, revocations, captured_cancellation_events,
+    ):
+        """Mutation and emit are one unit — a reactivated account nobody was
+        told about is exactly the state this event exists to prevent."""
+        from stapel_core.comm import action_registry, subscribe_action
+
+        def boom(event):
+            raise RuntimeError("subscriber down")
+
+        gdpr_orchestrator.initiate_closure(user.pk)
+        subscribe_action(DELETION_CANCELLED_ACTION, boom)
+        try:
+            with pytest.raises(Exception):
+                gdpr_orchestrator.cancel_closure(user.pk)
+        finally:
+            action_registry._subscribers.get(DELETION_CANCELLED_ACTION, []).clear()
+
+        closure = AccountClosureRequest.objects.get(user_id=user.pk)
+        assert closure.status == AccountClosureRequest.STATUS_GRACE
+        user.refresh_from_db()
+        assert user.is_active is False
+
+    def test_cancel_without_a_closure_emits_nothing(
+        self, user, captured_cancellation_events,
+    ):
+        with pytest.raises(ValueError):
+            gdpr_orchestrator.cancel_closure(user.pk)
+        assert captured_cancellation_events == []

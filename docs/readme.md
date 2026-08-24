@@ -36,6 +36,7 @@ reported there rather than discovered in an audit.
 
 ### Emits
 | `user.deleted` | [schema](schemas/emits/user.deleted.json) | All user PII permanently deleted after grace period. Every package storing user  |
+| `user.deletion_cancelled` | [schema](schemas/emits/user.deletion_cancelled.json) | Account closure cancelled during the grace period; every reversible reaction to `user.deletion_initiated` must be lifted. |
 | `user.deletion_initiated` | [schema](schemas/emits/user.deletion_initiated.json) | Account closure started. 30-day grace period begins; account is deactivated. |
 | `user.export_ready` | [schema](schemas/emits/user.export_ready.json) | Data export archive is ready for download. |
 | `user.sessions_revoked` | [schema](schemas/emits/user.sessions_revoked.json) | Closure revoked every session and access JTI of the user. |
