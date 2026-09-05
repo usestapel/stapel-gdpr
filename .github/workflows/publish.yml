@@ -4,7 +4,90 @@ on:
     tags: ["v*"]
 
 jobs:
+  # Releases are cut from main only. A tag on a side branch can publish a
+  # higher version that does not contain a lower one's fix — 0.60.2 did
+  # exactly that to 0.60.1 in stapel-core — and nothing downstream would go
+  # red. Runs before anything is built. See release-check.sh.
+  release-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the gate needs full history and every v* tag
+
+      - name: release-check (on main, and contains every published tag)
+        run: |
+          # Belt and braces: the gate is an error, not a skip, without a
+          # main ref to compare against, so make sure one is there.
+          git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+          sh ./release-check.sh
+
+  # Fleet-wide gate (2026-09-05): Publish is tag-triggered and runs
+  # independently of CI, so a release could reach PyPI while CI on the same
+  # commit failed or never ran at all — this happened twice to
+  # stapel-analytics on 2026-09-05. Every later job waits on this one going
+  # green for the tagged commit.
+  ci-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for a green CI run on this commit
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha = context.sha;
+            const workflow = 'ci.yml';
+            const deadlineMs = Date.now() + 20 * 60 * 1000;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            while (true) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflow,
+                head_sha: sha,
+                per_page: 20,
+              });
+              const runs = data.workflow_runs;
+              const completed = runs.filter((r) => r.status === 'completed');
+
+              for (const run of completed.filter((r) => r.conclusion === 'success')) {
+                const { data: jobsData } = await github.rest.actions.listJobsForWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id,
+                  per_page: 100,
+                });
+                const skipped = jobsData.jobs.filter((j) => j.conclusion === 'skipped');
+                if (skipped.length === 0) {
+                  core.info(`CI run ${run.id} is green for ${sha} with no skipped jobs.`);
+                  return;
+                }
+                core.info(`CI run ${run.id} succeeded but has ${skipped.length} skipped job(s) — not good enough.`);
+              }
+
+              if (runs.length > 0) {
+                const inProgress = runs.some((r) => r.status !== 'completed');
+                if (!inProgress) {
+                  core.setFailed(
+                    `CI has ${completed.length} completed run(s) for ${sha} and none is a clean success (no skipped jobs).`
+                  );
+                  return;
+                }
+              }
+
+              if (Date.now() >= deadlineMs) {
+                core.setFailed(`Timed out after 20 minutes waiting for a green ${workflow} run on ${sha}.`);
+                return;
+              }
+
+              core.info(`No qualifying green CI run yet for ${sha}; waiting 30s...`);
+              await sleep(30000);
+            }
   test:
+    needs: [ci-gate, release-gate]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
