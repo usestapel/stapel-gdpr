@@ -194,6 +194,22 @@
     "owner": "stapel_core"
   },
   {
+    "code": "error.401.gdpr.closure_token_expired",
+    "status": 401,
+    "params": [],
+    "remediation": "contact_support",
+    "en": "The 30-day grace period has ended and this account can no longer be restored.",
+    "owner": "stapel_gdpr"
+  },
+  {
+    "code": "error.401.gdpr.closure_token_invalid",
+    "status": 401,
+    "params": [],
+    "remediation": "reauthenticate",
+    "en": "This closure link is not valid.",
+    "owner": "stapel_gdpr"
+  },
+  {
     "code": "error.401.unauthorized",
     "status": 401,
     "params": [],
@@ -223,6 +239,14 @@
     "params": [],
     "remediation": "retry",
     "en": "This account is being erased and can no longer be used.",
+    "owner": "stapel_gdpr"
+  },
+  {
+    "code": "error.403.gdpr.closure_token_scope",
+    "status": 403,
+    "params": [],
+    "remediation": "reauthenticate",
+    "en": "This closure link belongs to an earlier closure of this account.",
     "owner": "stapel_gdpr"
   },
   {

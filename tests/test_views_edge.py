@@ -154,9 +154,13 @@ class TestErrorBranches:
         resp = authed_client.get("/gdpr/api/v1/user/account/close/status")
         assert resp.status_code == 200
         body = resp.json()
-        assert set(body) == {"status", "grace_ends_at", "can_cancel"}
+        assert set(body) == {"status", "grace_ends_at", "can_cancel", "closure_token"}
         assert body["status"] == "grace"
         assert body["can_cancel"] is True
+        # The capability is handed out ONCE, with the 202 that starts the
+        # closure. A status poll re-issuing it would turn a spent credential
+        # into a renewable one.
+        assert body["closure_token"] is None
 
     def test_export_request_payload_shape(self, authed_client, user):
         resp = authed_client.post("/gdpr/api/v1/user/data-export/request")

@@ -176,7 +176,9 @@ class ClosureStatusDTO:
         status: One of grace, deleting, deleted, cancelled. Example: grace
         grace_ends_at: ISO datetime when grace period ends. Example: 2026-07-24T10:00:00Z
         can_cancel: Whether the closure can still be cancelled. Example: true
+        closure_token: Single-purpose capability for polling and cancelling THIS closure after its sessions were revoked — present only on the 202 that starts the closure, null everywhere else. Store it and send it as the X-Closure-Token header; it expires with the grace period. Example: eyJjaWQiOjQyfQ:1uL9Wq:0S3n...
     """
     status: str
     grace_ends_at: str
     can_cancel: bool
+    closure_token: Optional[str] = None

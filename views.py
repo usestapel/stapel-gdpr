@@ -5,6 +5,7 @@ from django.http import FileResponse
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
+    OpenApiParameter,
     extend_schema,
     inline_serializer,
 )
@@ -16,12 +17,20 @@ from stapel_core.django.api.errors import (
     ERR_403_FORBIDDEN,
     StapelErrorResponse,
     StapelResponse,
+    error_401_unauthorized,
     error_500_internal,
 )
 from stapel_core.django.api.permissions import IsServiceRequest
 from stapel_core.django.captcha import captcha_protected
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
+from .closure_token import (
+    CLOSURE_TOKEN_HEADER,
+    ClosureTokenExpired,
+    ClosureTokenInvalid,
+    make_closure_token,
+    read_closure_token,
+)
 from .dto import (
     ClosureStatusDTO,
     DataOwnerHealthDTO,
@@ -35,6 +44,10 @@ from .dto import (
 from .errors import (
     ERR_400_UNKNOWN_DSAR_KIND,
     ERR_400_UNKNOWN_SUBJECT,
+    ERR_401_CLOSURE_TOKEN_EXPIRED,
+    ERR_401_CLOSURE_TOKEN_INVALID,
+    ERR_403_ACCOUNT_CLOSED,
+    ERR_403_CLOSURE_TOKEN_SCOPE,
     ERR_403_ERASURE_FORBIDDEN,
     ERR_404_DSAR_NOT_FOUND,
     ERR_404_ERASURE_NOT_FOUND,
@@ -50,6 +63,7 @@ from .errors import (
     SessionRevocationUnavailable,
 )
 from .guards import AccountNotClosed, erasure_authorized
+from .lifecycle import is_access_denied
 from .models import (
     AccountClosureRequest,
     DataExportRequest,
@@ -302,6 +316,100 @@ class DataExportDownloadView(GDPRAPIView):
 # =============================================================================
 
 
+#: The token as the generated clients see it. Declared as a real parameter, not
+#: only in prose: the security block can only say "anonymous or JWT" here (a
+#: per-lib emitter runs on unset SPECTACULAR_SETTINGS by fleet convention, so it
+#: cannot append a securityScheme component), and a caller that cannot see the
+#: header has no way to use the capability the 202 handed it.
+CLOSURE_TOKEN_PARAMETER = OpenApiParameter(
+    name=CLOSURE_TOKEN_HEADER,
+    type=OpenApiTypes.STR,
+    location=OpenApiParameter.HEADER,
+    required=False,
+    description=(
+        "The `closure_token` returned with the closure's 202, standing in for "
+        "the session that closure revoked. Scoped to that one closure and "
+        "expiring with its grace period. Send this **or** authenticate "
+        "normally; sending neither is a 401."
+    ),
+)
+
+
+def _closure_dto(closure, *, can_cancel: bool, closure_token: str | None = None) -> ClosureStatusDTO:
+    """The one shape all three closure endpoints answer with."""
+    return ClosureStatusDTO(
+        status=closure.status,
+        grace_ends_at=closure.grace_ends_at.isoformat(),
+        can_cancel=can_cancel,
+        closure_token=closure_token,
+    )
+
+
+def _closure_from_token(request):
+    """Resolve the ``X-Closure-Token`` header to ``(closure, error_response)``.
+
+    ``(None, None)`` means no token was presented — the caller falls back to
+    the ordinary authenticated path. Exactly one of the two is ever set
+    otherwise.
+
+    A presented token always decides, even when the request also carries a
+    session: quietly ignoring a credential the caller chose to send would hide
+    the fact that it is dead, and "your token is expired" is the answer that
+    tells a client to stop retrying with it.
+
+    The scope rule is the whole point of the token being *single-purpose*: it
+    authorizes the one closure it names and nothing else. A subject may close,
+    cancel, and close again, and the token from the first round must not act on
+    the second — so a token whose closure has been superseded by a newer one
+    for the same subject is refused with 403 rather than silently retargeted.
+    """
+    raw = request.headers.get(CLOSURE_TOKEN_HEADER, "")
+    if not raw:
+        return None, None
+
+    try:
+        payload = read_closure_token(raw)
+    except ClosureTokenExpired:
+        return None, StapelErrorResponse(401, ERR_401_CLOSURE_TOKEN_EXPIRED)
+    except ClosureTokenInvalid:
+        return None, StapelErrorResponse(401, ERR_401_CLOSURE_TOKEN_INVALID)
+
+    # Both halves of the payload are checked against the row: a token is only
+    # ever proof about the closure of the subject it was minted for.
+    closure = AccountClosureRequest.objects.filter(
+        pk=payload["cid"], user_id=payload["sub"],
+    ).first()
+    if closure is None:
+        return None, StapelErrorResponse(403, ERR_403_CLOSURE_TOKEN_SCOPE)
+
+    newest = (
+        AccountClosureRequest.objects.filter(user_id=closure.user_id)
+        .order_by("-initiated_at", "-pk")
+        .first()
+    )
+    if newest is not None and newest.pk != closure.pk:
+        return None, StapelErrorResponse(403, ERR_403_CLOSURE_TOKEN_SCOPE)
+
+    return closure, None
+
+
+def _closure_subject(request):
+    """``(user_id, error_response)`` for the authenticated half of both views.
+
+    Replaces the ``IsAuthenticated`` + ``AccountNotClosed`` permission pair on
+    the two endpoints that also accept a closure token: a DRF permission can
+    only say yes or no, and these endpoints have to distinguish "no credential
+    at all" (401) from "a credential for the wrong closure" (403) from "a
+    credential whose window is over" (401) with a registered error key each.
+    """
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated:
+        return None, error_401_unauthorized()
+    if is_access_denied(user.pk):
+        return None, StapelErrorResponse(403, ERR_403_ACCOUNT_CLOSED)
+    return user.pk, None
+
+
 class AccountCloseView(GDPRAPIView):
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
     request_serializer_class = None
@@ -311,8 +419,14 @@ class AccountCloseView(GDPRAPIView):
         summary="Initiate account closure",
         description=(
             "Starts a 30-day grace period. The account is deactivated and all "
-            "of its sessions are revoked immediately. Can be cancelled by "
-            "logging in during the grace period."
+            "of its sessions are revoked immediately — including the one that "
+            "made this call. The 202 therefore carries `closure_token`, a "
+            "single-purpose capability for this closure: send it as the "
+            "`X-Closure-Token` header to poll the status endpoint or to cancel, "
+            "with no session at all. It is returned exactly once and expires "
+            "with the grace period. A host whose auth backend admits "
+            "deactivated users can also cancel by logging back in; Django's "
+            "default backend does not, which is what the token is for."
         ),
         request=None,
         responses={
@@ -339,10 +453,8 @@ class AccountCloseView(GDPRAPIView):
                 return StapelErrorResponse(409, ERR_409_LEGAL_HOLD)
             return error_500_internal()
 
-        dto = ClosureStatusDTO(
-            status=closure.status,
-            grace_ends_at=closure.grace_ends_at.isoformat(),
-            can_cancel=True,
+        dto = _closure_dto(
+            closure, can_cancel=True, closure_token=make_closure_token(closure),
         )
         return StapelResponse(self.get_response_serializer_class()(dto), status=202)
 
@@ -355,68 +467,121 @@ class AccountCancelCloseView(GDPRAPIView):
     the closure, so every consumer that took a reversible action on the
     initiation (suppressed notifications, hidden content, suspended
     memberships) is told to lift it instead of waiting for its next sync.
+
+    Two credentials are accepted, because the closure destroyed the first one:
+    an ordinary session, or the ``X-Closure-Token`` the 202 handed back. See
+    :mod:`stapel_gdpr.closure_token`.
     """
 
-    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    # Deliberately open at the DRF layer: the credential check lives in the
+    # body, which is where the token path and the session path diverge and
+    # where each refusal gets its own registered error key.
+    permission_classes = [permissions.AllowAny]
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer
 
     @extend_schema(
         summary="Cancel account closure during grace period",
+        description=(
+            "Authorized either by a live session or by the `X-Closure-Token` "
+            "returned with the closure's 202 — the closure revoked every "
+            "session of the account, so the token is normally the only "
+            "credential the caller still holds. 401 when neither is present, "
+            "when the token is not ours, or when its grace period is over; "
+            "403 when the token names an earlier closure of the same account."
+        ),
         request=None,
+        parameters=[CLOSURE_TOKEN_PARAMETER],
         responses={
             200: ClosureStatusSerializer,
+            401: StapelErrorSerializer,
+            403: StapelErrorSerializer,
             404: StapelErrorSerializer,
         },
         tags=["GDPR"],
     )
     def post(self, request: Request):  # noqa: R007
+        closure, error = _closure_from_token(request)
+        if error is not None:
+            return error
+        if closure is not None:
+            user_id = closure.user_id
+        else:
+            user_id, error = _closure_subject(request)
+            if error is not None:
+                return error
+
         try:
-            closure = gdpr_orchestrator.cancel_closure(request.user.pk)
+            closure = gdpr_orchestrator.cancel_closure(user_id)
         except ValueError:
             return StapelErrorResponse(404, ERR_404_NO_ACTIVE_CLOSURE)
 
-        dto = ClosureStatusDTO(
-            status=closure.status,
-            grace_ends_at=closure.grace_ends_at.isoformat(),
-            can_cancel=False,
+        return StapelResponse(
+            self.get_response_serializer_class()(_closure_dto(closure, can_cancel=False)),
         )
-        return StapelResponse(self.get_response_serializer_class()(dto))
 
 
 class AccountCloseStatusView(GDPRAPIView):
-    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    """Poll a closure. Same two credentials as cancel, same reason.
+
+    Unlike every other view here this one keeps answering while the account is
+    ``deleting``/``deleted`` on the token path: a subject watching its own
+    erasure run is exactly who this endpoint is for, and refusing it there
+    would restore the blindness the token exists to remove. ``can_cancel``
+    turns false, which is the honest answer.
+    """
+
+    permission_classes = [permissions.AllowAny]
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer
 
     @extend_schema(
         summary="Get account closure status",
+        description=(
+            "Authorized either by a live session or by the `X-Closure-Token` "
+            "returned with the closure's 202. The token keeps answering after "
+            "the sessions are gone and while the erasure runs, until the grace "
+            "period it was signed for ends."
+        ),
         # The 404 is the ordinary answer, not an exception: almost nobody has
         # a closure on record. Undeclared, a generated client models this
         # endpoint as always-succeeding and every caller learns about the
         # refusal from a runtime throw.
-        responses={200: ClosureStatusSerializer, 404: StapelErrorSerializer},
+        parameters=[CLOSURE_TOKEN_PARAMETER],
+        responses={
+            200: ClosureStatusSerializer,
+            401: StapelErrorSerializer,
+            403: StapelErrorSerializer,
+            404: StapelErrorSerializer,
+        },
         tags=["GDPR"],
     )
     def get(self, request: Request):  # noqa: R007
-        closure = (
-            AccountClosureRequest.objects.filter(
-                user_id=request.user.pk,
+        closure, error = _closure_from_token(request)
+        if error is not None:
+            return error
+
+        if closure is None:
+            user_id, error = _closure_subject(request)
+            if error is not None:
+                return error
+            closure = (
+                AccountClosureRequest.objects.filter(user_id=user_id)
+                .exclude(status=AccountClosureRequest.STATUS_CANCELLED)
+                .order_by("-initiated_at")
+                .first()
             )
-            .exclude(status=AccountClosureRequest.STATUS_CANCELLED)
-            .order_by("-initiated_at")
-            .first()
-        )
+            if not closure:
+                return StapelErrorResponse(404, ERR_404_NO_ACTIVE_CLOSURE)
 
-        if not closure:
-            return StapelErrorResponse(404, ERR_404_NO_ACTIVE_CLOSURE)
-
-        dto = ClosureStatusDTO(
-            status=closure.status,
-            grace_ends_at=closure.grace_ends_at.isoformat(),
-            can_cancel=closure.status == AccountClosureRequest.STATUS_GRACE,
+        return StapelResponse(
+            self.get_response_serializer_class()(
+                _closure_dto(
+                    closure,
+                    can_cancel=closure.status == AccountClosureRequest.STATUS_GRACE,
+                ),
+            ),
         )
-        return StapelResponse(self.get_response_serializer_class()(dto))
 
 
 # =============================================================================

@@ -599,15 +599,26 @@
     "/gdpr/api/v1/user/account/cancel-close": {
       "post": {
         "operationId": "gdpr_api_v1_user_account_cancel_close_create",
-        "description": "Stop a closure that is still inside its grace period.\n\nThe account is reactivated and a ``user.deletion_cancelled`` comm action\nis emitted — the mirror of the ``user.deletion_initiated`` that started\nthe closure, so every consumer that took a reversible action on the\ninitiation (suppressed notifications, hidden content, suspended\nmemberships) is told to lift it instead of waiting for its next sync.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
+        "description": "Authorized either by a live session or by the `X-Closure-Token` returned with the closure's 202 — the closure revoked every session of the account, so the token is normally the only credential the caller still holds. 401 when neither is present, when the token is not ours, or when its grace period is over; 403 when the token names an earlier closure of the same account.\n\n**Permissions:** `AllowAny`",
         "summary": "Cancel account closure during grace period",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Closure-Token",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `closure_token` returned with the closure's 202, standing in for the session that closure revoked. Scoped to that one closure and expiring with its grace period. Send this **or** authenticate normally; sending neither is a 401."
+          }
+        ],
         "tags": [
           "GDPR"
         ],
         "security": [
           {
             "JWTCookieAuth": []
-          }
+          },
+          {}
         ],
         "responses": {
           "200": {
@@ -621,9 +632,30 @@
                     "value": {
                       "status": "grace",
                       "grace_ends_at": "2026-07-24T10:00:00Z",
-                      "can_cancel": true
+                      "can_cancel": true,
+                      "closure_token": "eyJjaWQiOjQyfQ:1uL9Wq:0S3n..."
                     }
                   }
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
                 }
               }
             },
@@ -645,7 +677,7 @@
     "/gdpr/api/v1/user/account/close": {
       "post": {
         "operationId": "gdpr_api_v1_user_account_close_create",
-        "description": "Starts a 30-day grace period. The account is deactivated and all of its sessions are revoked immediately. Can be cancelled by logging in during the grace period.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
+        "description": "Starts a 30-day grace period. The account is deactivated and all of its sessions are revoked immediately — including the one that made this call. The 202 therefore carries `closure_token`, a single-purpose capability for this closure: send it as the `X-Closure-Token` header to poll the status endpoint or to cancel, with no session at all. It is returned exactly once and expires with the grace period. A host whose auth backend admits deactivated users can also cancel by logging back in; Django's default backend does not, which is what the token is for.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
         "summary": "Initiate account closure",
         "tags": [
           "GDPR"
@@ -692,15 +724,26 @@
     "/gdpr/api/v1/user/account/close/status": {
       "get": {
         "operationId": "gdpr_api_v1_user_account_close_status_retrieve",
-        "description": "Base view exposing serializer seams.\n\nEvery concrete view declares ``request_serializer_class`` /\n``response_serializer_class`` (``None`` when that direction carries no\nserialized payload). Subclasses may swap either class attribute — or\noverride the getters — to customize the request/response envelopes\nwithout rewriting the method bodies.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
+        "description": "Authorized either by a live session or by the `X-Closure-Token` returned with the closure's 202. The token keeps answering after the sessions are gone and while the erasure runs, until the grace period it was signed for ends.\n\n**Permissions:** `AllowAny`",
         "summary": "Get account closure status",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "X-Closure-Token",
+            "schema": {
+              "type": "string"
+            },
+            "description": "The `closure_token` returned with the closure's 202, standing in for the session that closure revoked. Scoped to that one closure and expiring with its grace period. Send this **or** authenticate normally; sending neither is a 401."
+          }
+        ],
         "tags": [
           "GDPR"
         ],
         "security": [
           {
             "JWTCookieAuth": []
-          }
+          },
+          {}
         ],
         "responses": {
           "200": {
@@ -714,9 +757,30 @@
                     "value": {
                       "status": "grace",
                       "grace_ends_at": "2026-07-24T10:00:00Z",
-                      "can_cancel": true
+                      "can_cancel": true,
+                      "closure_token": "eyJjaWQiOjQyfQ:1uL9Wq:0S3n..."
                     }
                   }
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
                 }
               }
             },
@@ -913,6 +977,12 @@
             "type": "boolean",
             "description": "Whether the closure can still be cancelled",
             "example": true
+          },
+          "closure_token": {
+            "type": "string",
+            "nullable": true,
+            "description": "Single-purpose capability for polling and cancelling THIS closure after its sessions were revoked — present only on the 202 that starts the closure, null everywhere else. Store it and send it as the X-Closure-Token header; it expires with the grace period",
+            "example": "eyJjaWQiOjQyfQ:1uL9Wq:0S3n..."
           }
         },
         "required": [

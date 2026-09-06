@@ -4,6 +4,9 @@ ERR_409_EXPORT_COOLDOWN     = 'error.409.gdpr.export_cooldown'
 ERR_409_CLOSURE_PENDING     = 'error.409.gdpr.closure_already_pending'
 ERR_409_LEGAL_HOLD          = 'error.409.gdpr.legal_hold'
 ERR_404_NO_ACTIVE_CLOSURE   = 'error.404.gdpr.no_active_closure'
+ERR_401_CLOSURE_TOKEN_INVALID = 'error.401.gdpr.closure_token_invalid'
+ERR_401_CLOSURE_TOKEN_EXPIRED = 'error.401.gdpr.closure_token_expired'
+ERR_403_CLOSURE_TOKEN_SCOPE   = 'error.403.gdpr.closure_token_scope'
 ERR_404_EXPORT_NOT_FOUND    = 'error.404.gdpr.export_not_found'
 ERR_403_ACCOUNT_CLOSED      = 'error.403.gdpr.account_closed'
 ERR_410_DOWNLOAD_EXPIRED    = 'error.410.gdpr.download_expired'
@@ -21,6 +24,9 @@ _ERRORS = {
     ERR_409_CLOSURE_PENDING:   'Account closure is already in progress.',
     ERR_409_LEGAL_HOLD:        'Account data is under a legal hold and cannot be deleted.',
     ERR_404_NO_ACTIVE_CLOSURE: 'No pending account closure found.',
+    ERR_401_CLOSURE_TOKEN_INVALID: 'This closure link is not valid.',
+    ERR_401_CLOSURE_TOKEN_EXPIRED: 'The 30-day grace period has ended and this account can no longer be restored.',
+    ERR_403_CLOSURE_TOKEN_SCOPE:   'This closure link belongs to an earlier closure of this account.',
     ERR_404_EXPORT_NOT_FOUND:  'Export request not found.',
     ERR_403_ACCOUNT_CLOSED:    'This account is being erased and can no longer be used.',
     ERR_410_DOWNLOAD_EXPIRED:  'Download link has expired.',
@@ -41,6 +47,13 @@ register_service_errors(
         ERR_400_UNKNOWN_SUBJECT:   'fix_input',
         ERR_400_UNKNOWN_DSAR_KIND: 'fix_input',
         ERR_403_ERASURE_FORBIDDEN: 'contact_support',
+        # A closure token that outlived its grace is not a re-login problem:
+        # the window it authorized is shut and the erasure is under way, so
+        # the only path left is a human one. The other two ARE recoverable by
+        # presenting a real session, which is what `reauthenticate` means.
+        ERR_401_CLOSURE_TOKEN_EXPIRED: 'contact_support',
+        ERR_401_CLOSURE_TOKEN_INVALID: 'reauthenticate',
+        ERR_403_CLOSURE_TOKEN_SCOPE:   'reauthenticate',
     },
 )
 

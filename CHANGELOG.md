@@ -5,6 +5,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-09-07
+
+Closing an account no longer locks the person out of the grace period the
+closure just promised them.
+
+### The incident
+
+Found on a live stand running 0.4.2; the code path was unchanged through
+0.5.4. `POST user/account/close` answers `202 {"status": "grace",
+"grace_ends_at": ..., "can_cancel": true}` — and, in the same transaction that
+records the closure, revokes every session and access JTI of the subject. That
+revocation is correct and stays: a closure that leaves pre-closure tokens alive
+is the defect `lifecycle.revoke_sessions` exists to refuse.
+
+But the only credential the caller held for `GET user/account/close/status`
+and `POST user/account/cancel-close` was the session that call had just
+destroyed. Both answered **401 to the very token that closed the account**.
+The app that offered the 30-day grace could neither show it nor undo it, and
+the body it had just rendered said `can_cancel: true`.
+
+Logging back in is not the way out either: closure deactivates the user, and
+Django's `ModelBackend` refuses an inactive account. The docstring's "can be
+cancelled by logging in during the grace period" was true only on a host whose
+auth backend authenticates deactivated users.
+
+Nothing was red. Every endpoint behaved exactly as written, each on its own —
+the defect lived in the seam between them, which is where the fleet's
+production defects keep living.
+
+### Added — a capability that survives the revocation
+
+- **`stapel_gdpr.closure_token`** — `make_closure_token` / `read_closure_token`
+  and the `X-Closure-Token` header name. A `django.core.signing` value: an HMAC
+  over `{closure id, subject, exp}` with the project `SECRET_KEY`
+  (`SECRET_KEY_FALLBACKS` honoured on read, so a key rotation does not strand a
+  grace period). Nothing is persisted — there is no second credential table to
+  leak, purge, or forget.
+- **`ClosureStatusDTO.closure_token`** — returned **once**, with the 202 that
+  starts the closure, and `null` on every other response. A status poll that
+  re-issued it would turn a spent credential into a renewable one.
+
+It is a capability, not a session. It authenticates nobody, it is accepted by
+the closure status and cancel endpoints only, and only for the closure it
+names; `exp` is that closure's own `grace_ends_at`, so it dies exactly when the
+cancellable window does. Header only, never a query string — the rule the
+export download token was moved to in 0.4.0, for the same reason.
+
+### Changed — the two endpoints take either credential
+
+`GET user/account/close/status` and `POST user/account/cancel-close` now accept
+a live session **or** the token. The credential check moved from the
+`IsAuthenticated` + `AccountNotClosed` permission pair into the view body,
+because a DRF permission can only answer yes or no and these endpoints have to
+distinguish four refusals with a registered error key each.
+
+`GET .../close/status` also keeps answering on the token path while the account
+is `deleting`/`deleted` (`can_cancel: false`). A subject watching its own
+erasure run is exactly who this endpoint is for; refusing it there would
+restore the blindness the token exists to remove.
+
+### Added — three error keys
+
+- `error.401.gdpr.closure_token_invalid` — not signed by this project.
+- `error.401.gdpr.closure_token_expired` — the grace period is over; the
+  erasure is under way and the account cannot come back (`contact_support`,
+  not `reauthenticate`: there is nothing to log back into).
+- `error.403.gdpr.closure_token_scope` — the token names an **earlier** closure
+  of the same subject. A user may close, cancel and close again; the first
+  round's token must not act on the second, and resolving "the subject's
+  current closure" from a token minted for a different one is precisely the
+  shortcut that would make the token a session.
+
+No credential at all is still `error.401.unauthorized`.
+
+### Unchanged, deliberately
+
+- Sessions are still revoked immediately at closure, in the same transaction.
+- Login during grace is still the **host's** authentication policy: the user
+  stays deactivated and the closure gate still admits `closing` on purpose, so
+  a backend that authenticates inactive users can still log the subject back in
+  and cancel from a real session. This module does not re-enable login; on a
+  stock Django backend it cannot be done, which is what the token is for.
+
+### Note for stapel-translate
+
+`translations/errors.{ru,es}.json` carry the three new keys as `imported` —
+they are authored here because the builtin corpus does not have them yet. The
+strings belong in `stapel-translate/fixtures/builtin/*.json` (all 20 languages,
+per its own key-set gate); a later seed regeneration here will keep the two
+existing values rather than overwrite them.
+
 ## [0.5.4] — 2026-09-07
 
 The host's data-owner inventory is now checked against what the installed

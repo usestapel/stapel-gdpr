@@ -1,7 +1,10 @@
 {
   "error.400.gdpr.unknown_dsar_kind": "Tipo de solicitud de protección de datos desconocido.",
   "error.400.gdpr.unknown_subject_type": "Este tipo de datos no se puede eliminar a través de este endpoint.",
+  "error.401.gdpr.closure_token_expired": "El período de gracia de 30 días ha terminado y esta cuenta ya no se puede restaurar.",
+  "error.401.gdpr.closure_token_invalid": "Este enlace de cierre no es válido.",
   "error.403.gdpr.account_closed": "Esta cuenta se está eliminando y ya no se puede utilizar.",
+  "error.403.gdpr.closure_token_scope": "Este enlace de cierre pertenece a un cierre anterior de esta cuenta.",
   "error.403.gdpr.erasure_forbidden": "No tienes permiso para solicitar la eliminación de este elemento.",
   "error.404.gdpr.dsar_not_found": "Solicitud de protección de datos no encontrada.",
   "error.404.gdpr.erasure_not_found": "Solicitud de eliminación no encontrada.",

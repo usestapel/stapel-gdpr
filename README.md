@@ -24,13 +24,13 @@ pip install stapel-gdpr
 
 | Fact | Value |
 |---|---|
-| Version | `0.5.4` |
+| Version | `0.5.5` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 15 |
 | Config axes | 3 |
 | Usage surface | 18 |
 | Extension points | 4 |
-| Error codes | 57 |
+| Error codes | 60 |
 | Fleet dependencies | [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation
@@ -83,6 +83,37 @@ Run `manage.py check` after wiring: a missing or stale data-owner inventory,
 an owner name no installed library declares, an installed owner the inventory
 omits, hash rows written outside `store_hashes`, and every open escape hatch
 are reported there rather than discovered in an audit.
+
+## Closing an account, from the client's side
+
+`POST user/account/close` revokes every session of the subject — including the
+one that made the call. Its 202 therefore carries `closure_token`, the
+capability that survives the revocation:
+
+```jsonc
+// 202 Accepted
+{
+  "status": "grace",
+  "grace_ends_at": "2026-10-07T09:12:00Z",
+  "can_cancel": true,
+  // Issued ONCE. Store it; there is no way to ask for it again.
+  "closure_token": "eyJjaWQiOjQyfQ:1uL9Wq:0S3n..."
+}
+```
+
+Send it back as a header — never in a URL — to poll or to undo:
+
+```http
+GET  /gdpr/api/v1/user/account/close/status
+POST /gdpr/api/v1/user/account/cancel-close
+X-Closure-Token: eyJjaWQiOjQyfQ:1uL9Wq:0S3n...
+```
+
+The token is signed with the project `SECRET_KEY`, nothing is stored, it is
+scoped to that one closure, and it expires with the grace period
+(`error.401.gdpr.closure_token_expired` after that). A live session still works
+wherever the host's auth backend authenticates a deactivated user; Django's
+default backend does not, which is what the token is for.
 
 ## Bus events
 

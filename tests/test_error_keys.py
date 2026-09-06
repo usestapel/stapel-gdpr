@@ -93,11 +93,14 @@ def test_registry_declares_every_key_this_module_translates():
 def test_service_keys_present():
     entries = {e["code"]: e for e in json.loads(ERRORS_JSON.read_text())}
     gdpr = [c for c in entries if ".gdpr." in c]
-    assert len(gdpr) == 15, gdpr
+    assert len(gdpr) == 18, gdpr
     for code in (
         "error.400.gdpr.unknown_dsar_kind",
         "error.400.gdpr.unknown_subject_type",
+        "error.401.gdpr.closure_token_expired",
+        "error.401.gdpr.closure_token_invalid",
         "error.403.gdpr.account_closed",
+        "error.403.gdpr.closure_token_scope",
         "error.403.gdpr.erasure_forbidden",
         "error.404.gdpr.dsar_not_found",
         "error.404.gdpr.erasure_not_found",

@@ -1,8 +1,8 @@
-# stapel-gdpr 0.5.4
+# stapel-gdpr 0.5.5
 
 GDPR compliance: staged async data export (Art. 15/20) with status polling and download; subject-scoped erasure (Art. 17) — account, workspace, meeting, recording, document, file — each proven by one receipt per data owner that claims the subject type, with a purge SLA, timeout sweep and a subprocessor ledger behind `fully_erased_by`; account closure keeps its cancellable 30-day grace and produces an ErasureRequest at grace end; DSAR intake (Art. 12) with automated acknowledgement and both statutory clocks; data-owner liveness probing; inactivity closure, retention cleanup, LegalHold and ReRegistrationHash; orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote owners.
 
-Contract: axes 3 · surface 18 · extension points 4 · operations 15 · error codes 57.
+Contract: axes 3 · surface 18 · extension points 4 · operations 15 · error codes 60.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -94,7 +94,7 @@ Paths are relative to `/gdpr/api/v1/`.
 - POST /user/data-export/request — gdpr_api_v1_user_data_export_request_create
 - GET /user/data-export/status — gdpr_api_v1_user_data_export_status_retrieve
 
-## Error codes (57) — the StapelError envelope
+## Error codes (60) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -117,10 +117,13 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify
 - error.400.verification_invalid_factor [400] verify
+- error.401.gdpr.closure_token_expired [401] contact_support
+- error.401.gdpr.closure_token_invalid [401] reauthenticate
 - error.401.unauthorized [401] reauthenticate
 - error.402.payment_required [402] retry
 - error.403.forbidden [403] retry
 - error.403.gdpr.account_closed [403] retry
+- error.403.gdpr.closure_token_scope [403] reauthenticate
 - error.403.gdpr.erasure_forbidden [403] contact_support
 - error.403.network_blocked [403] contact_support
 - error.403.verification_enrollment_required [403] verify

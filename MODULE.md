@@ -9,7 +9,7 @@ Stapel ground rules apply: modules never import each other; all cross-module com
 | Capability | Entry points | Notes |
 |---|---|---|
 | Data export (GDPR Art. 15/20) | `POST user/data-export/{request,status,download}` (`urls.py`), `GDPROrchestrator.request_export/run_export` | Fan-out to all declared data owners; 24 h assembly deadline (partial archive after that, swept hourly), single-use download token (`DOWNLOAD_TTL_HOURS`, POST body only, archive deleted on use), 30-day cooldown per user |
-| Account closure & deletion (Art. 17) | `POST user/account/{close,cancel-close}`, `GET user/account/close/status`, `GDPROrchestrator.initiate_closure/cancel_closure/execute_deletion` | 30-day grace period; the account is deactivated **through the model** (observers fire) and all sessions are revoked, or the closure is refused; deletion = local `GDPRProvider`s + erasure of the primary `users.User` row + `user.deleted` comm fan-out + per-owner receipts |
+| Account closure & deletion (Art. 17) | `POST user/account/{close,cancel-close}`, `GET user/account/close/status`, `GDPROrchestrator.initiate_closure/cancel_closure/execute_deletion` | 30-day grace period; the account is deactivated **through the model** (observers fire) and all sessions are revoked, or the closure is refused; deletion = local `GDPRProvider`s + erasure of the primary `users.User` row + `user.deleted` comm fan-out + per-owner receipts. Because the closure revokes the caller's own session, the 202 carries a signed single-purpose `closure_token` (`X-Closure-Token`) that polls and cancels that one closure without any session — see [Closure flow](#closure-flow--who-holds-a-credential-at-each-step) |
 | Server-side closed-account gate | `guards.AccountNotClosed` (on every view here), `guards.AccountClosureGuardMiddleware` (host-wired), `lifecycle.access_state` | Reads the closure row, never `is_active` — a token that syncs `is_active=true` back into the user table cannot reopen an erasing account |
 | Subject-scoped erasure (Art. 17) | `POST erasures`, `GET erasures/{id}`, `GET me/erasures`, `GDPROrchestrator.request_erasure` | The account's machine, generalized: a `workspace`/`meeting`/`recording`/`document`/`file` gets the same purge SLA (`ERASURE_SLA_DAYS`), the same one-receipt-per-owner ledger and the same refusal to self-certify. No grace — the host already removed it from the UI. Authorization is the host's `ERASURE_AUTHORIZER` |
 | Erasure intake from another service | `gdpr.erasure.open` (Action), `gdpr.erasure.request` (Function), `stapel_gdpr.client.request_erasure` / `CommErasureClient` | `request_erasure` is an in-process call, and the owner that detects the need (a retention purge, a delete view in another container) cannot reach it. The client helper picks the Function when a comm transport is configured and the orchestrator otherwise, so an owner library points one dotted path at it and works in both deployments. Idempotent on a caller-supplied `idempotency_key`: at-least-once delivery must not mint two erasures for one subject |
@@ -251,8 +251,50 @@ This module defines and sends **no Django signals**. Business milestones travel 
 - **Do not change `REREG_SALT` once hashes exist** — it silently invalidates every stored re-registration hash.
 - **Do not treat `is_active` as "is this account closed?"** — it is a plain boolean any JWT-to-DB user sync can write back. Ask `stapel_gdpr.is_access_denied(user_id)` / `access_state(user_id)`, which read the closure row.
 - **Do not deactivate a user with `QuerySet.update()`** — raw SQL fires no `pre_save`/`post_save`, so activation observers never run and the deactivation propagates nowhere. `lifecycle.set_active` writes through the instance.
-- **Do not put the export download token in a URL** (query string or path): it lands in access logs, browser history and `Referer`. It travels in the POST body, is spent once, and dies with the archive.
+- **Do not put the export download token in a URL** (query string or path): it lands in access logs, browser history and `Referer`. It travels in the POST body, is spent once, and dies with the archive. The same rule holds for `closure_token`, which travels in the `X-Closure-Token` header.
+- **Do not drop the `closure_token` from the 202.** It is issued once and never re-issued; a client that discards it has, on a stock Django auth backend, no way to reach the grace period it was just promised — which is the defect 0.5.5 closed.
 - **Do not treat `user.deletion_initiated` as final.** Its mirror `user.deletion_cancelled` (since 0.6.0) says the account came back; a consumer that reacts to the first and ignores the second keeps a live user suppressed.
+
+## Closure flow — who holds a credential at each step
+
+The closure revokes the caller's own sessions, so the flow has to hand the
+caller something that outlives them. Since 0.5.5 it does.
+
+| Step | Call | Credential the caller holds afterwards |
+|---|---|---|
+| 1. Close | `POST user/account/close` (session) | Its session is **gone** — `initiate_closure` revokes every session and access JTI in the same transaction. The 202 therefore carries `closure_token`. |
+| 2. Poll | `GET user/account/close/status` | `X-Closure-Token: <closure_token>`, or a session if the host's auth backend lets the (now deactivated) user log back in. |
+| 3a. Cancel | `POST user/account/cancel-close` | Same two. Reopens the account, emits `user.deletion_cancelled`. |
+| 3b. Grace ends | `process_expired_grace_periods` | The token expires with the grace period; the closure moves to `deleting` and the status endpoint keeps answering until then. |
+
+`closure_token` (`closure_token.py`) is a `django.core.signing` value — an HMAC
+over `{closure id, subject, exp}` with the project `SECRET_KEY`
+(`SECRET_KEY_FALLBACKS` honoured on read), returned **once** with the 202 and
+`null` on every other response. Nothing is persisted; there is no second
+credential table. It authenticates nobody: it is accepted by the closure status
+and cancel endpoints only, only for the closure it names, and `exp` is that
+closure's own `grace_ends_at` — the capability dies exactly when the
+cancellable window does.
+
+Refusals: `error.401.gdpr.closure_token_invalid` (not signed by this project),
+`error.401.gdpr.closure_token_expired` (grace over — the account is being
+erased and cannot come back), `error.403.gdpr.closure_token_scope` (the token
+names an earlier closure of the same subject; a user may close, cancel and
+close again, and the first round's token must not act on the second). No
+credential at all is `error.401.unauthorized`, as before.
+
+It travels in a **header, never a query string** — the same rule the export
+download token was moved to, for the same reason: a URL lands in access logs,
+browser history, `Referer` and every proxy in between.
+
+**Login during grace is unchanged.** `initiate_closure` still deactivates the
+user, and the closure gate still admits `closing` deliberately, so a host whose
+auth backend authenticates inactive users (`AllowAllUsersModelBackend`, or its
+own) can log the subject back in and cancel from a real session. Django's
+default `ModelBackend` refuses an inactive account, so on a stock deployment
+the token is the only way back — which is what it is for. This module does not
+re-enable login during grace: that is the host's authentication policy, not the
+erasure module's.
 
 ## Cancellation
 

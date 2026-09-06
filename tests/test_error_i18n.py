@@ -9,11 +9,19 @@ stapel-auth's ``docs/errors.{ru,es}.md`` rendered ``_(en)_`` rows for the keys
 the 2026-08-11 GDPR wave added, and the older ones only survived because
 stapel-auth still carried a pre-ownership-scoping copy of them.
 
-Provenance: every value is **seeded** from the curated stapel-translate builtin
-corpus (``origin: seed:stapel-builtin``) — the single home of these ten strings.
-Nothing here is hand-written or LLM-generated, so there is no machine-translation
-table to maintain: a new key gets its translations in stapel-translate first,
-and this module seeds from there.
+Provenance: values are **seeded** from the curated stapel-translate builtin
+corpus (``origin: seed:stapel-builtin``) — the single home of these strings.
+Nothing here is LLM-generated, so there is no machine-translation table to
+maintain: a new key gets its translations in stapel-translate first, and this
+module seeds from there.
+
+The exception, recorded rather than laundered: the three
+``error.*.gdpr.closure_token_*`` keys added in 0.5.5 are ``origin: imported``.
+The corpus does not carry them yet — its own gate requires the key set of
+``en.json`` in all twenty languages — so they were authored here to keep the
+coverage gate honest. ``imported`` is the label stapel-core gives a value whose
+authorship it cannot verify, and it is protected from re-derivation: once
+stapel-translate adopts the strings, a regen keeps these two and seeds the rest.
 
 Regenerate after adding/changing an error key or a translation:
 
