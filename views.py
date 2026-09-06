@@ -518,6 +518,10 @@ def _erasure_dto(request_row: ErasureRequest) -> ErasureStatusDTO:
         subject_key=request_row.subject_key,
         workspace_id=request_row.workspace_id,
         state=request_row.state,
+        # The machine's state and the report's word are not the same thing:
+        # a TIMEOUT is a finished machine and an unfinished erasure, and
+        # until 0.5.4 nothing above the ORM ever said the second half.
+        outcome=request_row.outcome,
         origin=request_row.origin,
         requested_at=request_row.requested_at.isoformat(),
         due_at=request_row.due_at.isoformat(),
@@ -535,6 +539,7 @@ def _erasure_dto(request_row: ErasureRequest) -> ErasureStatusDTO:
                 receipt_at=part.receipt_at.isoformat() if part.receipt_at else None,
                 receipt_id=part.receipt_id,
                 counts=part.counts or {},
+                unanswered=part.unanswered,
             )
             for part in request_row.parts.all()
         ],
@@ -548,6 +553,7 @@ def _erasure_dto(request_row: ErasureRequest) -> ErasureStatusDTO:
             for obligation in request_row.obligations.all()
         ],
         unreceipted_owners=request_row.unreceipted_owners,
+        unanswered_owners=request_row.unanswered_owners,
     )
 
 

@@ -24,7 +24,7 @@ pip install stapel-gdpr
 
 | Fact | Value |
 |---|---|
-| Version | `0.5.3` |
+| Version | `0.5.4` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 15 |
 | Config axes | 3 |
@@ -54,12 +54,24 @@ MIDDLEWARE = [
 ]
 
 STAPEL_GDPR = {
-    # Every store holding personal data. Erasure is only ever reported
-    # complete when each of these returned a deletion receipt, so an owner
-    # missing here is a store that quietly keeps the data. `manage.py check`
-    # fails while this is empty.
-    'DATA_OWNERS': ['auth', 'profiles', {'name': 'cdn', 'kind': 'remote'}],
-    'DATA_OWNERS_VERSION': '2026-08-13.1',
+    # Every store holding personal data, mapped to the subjects it holds it
+    # about. Erasure is only ever reported complete when each of these
+    # returned a deletion receipt, so an owner missing here is a store that
+    # quietly keeps the data. `manage.py check` fails while this is empty.
+    #
+    # These are the names the LIBRARIES declare, not app labels: the `cdn`
+    # app owns `media`, the `profiles` app owns `profile`. A name no
+    # installed library declares is inferred remote and times out in
+    # silence, so `manage.py check` refuses it (gdpr.E009), and an installed
+    # owner missing from this map — a store no erasure ever waits for — is
+    # gdpr.E010.
+    'DATA_OWNERS': {
+        'auth': ['account'],
+        'profile': ['account'],
+        'media': {'subject_types': ['account', 'workspace', 'file'],
+                  'kind': 'remote'},
+    },
+    'DATA_OWNERS_VERSION': '2026-09-07.1',
     # How the user's sessions are revoked at closure. Auto-detected when
     # stapel-auth is installed; without any seam, closure is refused rather
     # than performed with live tokens left behind.
@@ -68,8 +80,9 @@ STAPEL_GDPR = {
 ```
 
 Run `manage.py check` after wiring: a missing or stale data-owner inventory,
-hash rows written outside `store_hashes`, and every open escape hatch are
-reported there rather than discovered in an audit.
+an owner name no installed library declares, an installed owner the inventory
+omits, hash rows written outside `store_hashes`, and every open escape hatch
+are reported there rather than discovered in an audit.
 
 ## Bus events
 

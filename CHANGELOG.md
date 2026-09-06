@@ -5,6 +5,98 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-09-07
+
+The host's data-owner inventory is now checked against what the installed
+libraries actually declare, and an erasure report stops saying **complete**
+over an owner that never answered.
+
+### The incident
+
+A fleet deployment (darom) listed `"profiles"` and `"cdn"` in
+`STAPEL_GDPR["DATA_OWNERS"]`. Those are **app labels**. The libraries declare
+`"profile"` (`stapel_profiles.erasure.GDPR_OWNER`) and `"media"`
+(`stapel_cdn.erasure.OWNER`). The same settings dict omitted `video` and
+`agent` entirely.
+
+Nothing was red. A name that matches no registered provider is *inferred
+remote* — indistinguishable, from this library's side, from an owner living
+in another container — so `profiles` and `cdn` were given receipt slots, sat
+there, and were swept to `timeout` in silence. `video` and `agent` got no
+slot at all, so `_maybe_finalize` had nothing left to wait for and marked
+requests `deleted`. Four stores were never asked to erase anything, for
+months, and it was found by stapel-tools' ADO005 rather than by the module
+whose whole purpose is to refuse exactly this.
+
+`gdpr.E002` could not have caught it: a misspelling registers nothing, so it
+has nothing to be unreachable *from*, and an omitted owner has nothing to be
+absent from.
+
+### Added — the libraries' half of the inventory
+
+- **`stapel_gdpr.declarations`** — `installed_owner_declarations()`, the
+  owner names and subject types the *installed packages* declare, read from
+  three seams in order of authority: `stapel_core.gdpr.register_gdpr_owner`
+  (the canonical one — the only seam that carries the name, the subject types
+  and proof that the erasure path is subscribed), `GDPRProvider.section` in
+  `gdpr_registry`, and the module constants `OWNER`/`GDPR_OWNER` +
+  `SUBJECT_TYPES`/`GDPR_SUBJECT_TYPES` in an installed app's `erasure` or
+  `gdpr` module. The last one is static — true of the installed package
+  before anything is wired — and it is what makes the incident detectable.
+  App labels and package names are recorded as **aliases**, because
+  `cdn`→`media` is a substitution no string distance would ever find.
+
+### Added — four boot-time checks
+
+- **`gdpr.E009`** — `DATA_OWNERS` names an owner no installed library
+  declares, *and* an installed library declares the name it was plainly meant
+  to be. Names it: `"cdn" -> "media" (declared by stapel_cdn.erasure)`.
+- **`gdpr.E010`** — an installed library declares an erasure owner that
+  `DATA_OWNERS` does not list. This is the half with no symptom at all: no
+  receipt slot, nothing to wait for, a `deleted` request over a live store.
+- **`gdpr.W011`** — the same, for a name in the new
+  `STAPEL_GDPR["DATA_OWNERS_OPT_OUT"]`. A deliberate exemption is a warning,
+  not silence — it stays in the same place the accident would have been.
+- **`gdpr.W012`** — an owner claims a subject type the host does not list for
+  it, or one missing from `SUBJECT_TYPES`. The owner answers for the subjects
+  that *were* listed, which is what keeps the gap invisible.
+
+`E009` fires only when a nearest declared name exists. A name this process
+cannot see is a remote owner in a microservices deployment, not a typo, and
+guessing would fail every such service; that case is `gdpr.W006`'s, which
+already reports an owner that never answers a probe. The whole check is
+silent when no owner library is installed here.
+
+### Added — the report stops overstating itself
+
+The `timeout` state and the sweep that reaches it both already existed and
+both were already correct. Nothing above the ORM ever showed them, so an
+erasure whose owners went silent read as finished everywhere a person looked.
+
+- `ErasurePart.unanswered` — no receipt ever arrived (`pending` or
+  `timeout`). Distinct from `failed`, which is an owner that answered.
+- `ErasureRequest.unanswered_owners` and `ErasureRequest.outcome` —
+  `pending` / `complete` / `incomplete`. **Never `complete`** while an owner
+  is unanswered or completeness was waived through
+  `ALLOW_ERASURE_WITHOUT_RECEIPTS`; a `timeout` request is `incomplete`, in
+  that word.
+- `ErasureStatusDTO.outcome`, `ErasureStatusDTO.unanswered_owners` and
+  `ErasurePartDTO.unanswered` publish it on `GET /erasures/{id}`.
+- The `ErasureRequest` admin gains **Outcome** and **Never answered**
+  columns, and the part inline an **Unanswered** flag.
+
+### Added — settings
+
+- **`DATA_OWNERS_OPT_OUT`** (`[]`) — installed owners this deployment
+  deliberately does not ask. Downgrades `gdpr.E010` to `gdpr.W011` for the
+  names listed. No wildcard: an exemption names its store.
+
+Patch, not minor. The three DTO fields are additive with defaults, no
+existing field changed shape, and no consumer has to adapt — the same
+argument 0.5.3 made. **The 0.6.0 slot stays reserved** for the `user.deleted`
+removal, which is still a fleet cutover and an owner decision, not something
+an additive release may spend.
+
 ## [0.5.3] — 2026-08-24
 
 Additive. `cancel_closure()` now emits **`user.deletion_cancelled`** — the

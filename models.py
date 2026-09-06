@@ -354,12 +354,56 @@ class ErasureRequest(models.Model):
     def __str__(self):
         return f'ErasureRequest({self.subject_type}:{self.subject_key}, {self.state})'
 
+    #: What the erasure REPORT says, as opposed to what the machine is doing.
+    #: `state` is the machine (queued/erasing/deleted/timeout); this is the
+    #: single word a status page, an audit export or a DPA answer may use.
+    OUTCOME_PENDING    = 'pending'
+    OUTCOME_COMPLETE   = 'complete'
+    OUTCOME_INCOMPLETE = 'incomplete'
+
     @property
     def unreceipted_owners(self) -> list[str]:
         """Owners without a durable receipt — what blocks DELETED."""
         return sorted(
             self.parts.exclude(state=ErasurePart.STATE_DONE).values_list('owner', flat=True)
         )
+
+    @property
+    def unanswered_owners(self) -> list[str]:
+        """Owners that never answered at all — silence, not a refusal.
+
+        The subset of :attr:`unreceipted_owners` whose part is still PENDING
+        or was swept to TIMEOUT. A FAILED part means the owner answered and
+        said it could not erase, which is a different sentence to write in a
+        report than "we asked and nothing came back".
+        """
+        return sorted(
+            self.parts.filter(
+                state__in=[ErasurePart.STATE_PENDING, ErasurePart.STATE_TIMEOUT],
+                receipt_at__isnull=True,
+            ).values_list('owner', flat=True)
+        )
+
+    @property
+    def outcome(self) -> str:
+        """`complete` only when every owner actually answered.
+
+        The 2026-09-07 incident is the reason this is not just
+        ``state == DELETED``: the machine already had a TIMEOUT state and a
+        sweep that reached it, but nothing above the ORM ever showed it, so
+        an erasure whose owners went silent read as finished everywhere a
+        person looked. A request is COMPLETE here only when it is DELETED,
+        no owner is unanswered, and completeness was not waived through
+        ``ALLOW_ERASURE_WITHOUT_RECEIPTS``; TIMEOUT — and a waived DELETED —
+        are INCOMPLETE, in that word, wherever the state is published.
+        """
+        if self.state == self.STATE_TIMEOUT:
+            return self.OUTCOME_INCOMPLETE
+        if self.state != self.STATE_DELETED:
+            return self.OUTCOME_PENDING
+        if self.completeness_waived or self.unreceipted_owners:
+            return self.OUTCOME_INCOMPLETE
+        return self.OUTCOME_COMPLETE
 
     @property
     def fully_erased_by(self):
@@ -428,6 +472,19 @@ class ErasurePart(models.Model):
     class Meta:
         app_label       = 'gdpr'
         unique_together = [('request', 'owner')]
+
+    @property
+    def unanswered(self) -> bool:
+        """True when this owner never answered — no receipt ever arrived.
+
+        PENDING (still waiting) and TIMEOUT (waited, nothing came) are both
+        silence; FAILED is an owner that answered with an error. A report
+        that collapses the two says "erasure failed at media" when what
+        happened is that media was never heard from.
+        """
+        return self.receipt_at is None and self.state in (
+            self.STATE_PENDING, self.STATE_TIMEOUT,
+        )
 
     def record_receipt(self, receipt_id: str = '', counts: dict | None = None) -> None:
         self.state      = self.STATE_DONE

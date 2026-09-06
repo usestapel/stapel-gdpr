@@ -396,9 +396,13 @@
                       "requested_at": "2026-08-24T09:00:00Z",
                       "due_at": "2026-09-23T09:00:00Z",
                       "fully_erased_by": "2026-10-18T09:00:00Z",
+                      "outcome": "incomplete",
                       "completed_at": "2026-08-24T09:12:00Z",
                       "grace_ends_at": "2026-09-23T09:00:00Z",
                       "unreceipted_owners": [
+                        "media"
+                      ],
+                      "unanswered_owners": [
                         "media"
                       ]
                     }
@@ -527,9 +531,13 @@
                         "requested_at": "2026-08-24T09:00:00Z",
                         "due_at": "2026-09-23T09:00:00Z",
                         "fully_erased_by": "2026-10-18T09:00:00Z",
+                        "outcome": "incomplete",
                         "completed_at": "2026-08-24T09:12:00Z",
                         "grace_ends_at": "2026-09-23T09:00:00Z",
                         "unreceipted_owners": [
+                          "media"
+                        ],
+                        "unanswered_owners": [
                           "media"
                         ]
                       }
@@ -1076,6 +1084,10 @@
             "example": {
               "recordings": 3
             }
+          },
+          "unanswered": {
+            "type": "boolean",
+            "description": "Whether this owner never answered at all — still waiting, or timed out in silence. A failed part answered; this one did not"
           }
         },
         "required": [
@@ -1134,6 +1146,11 @@
             "description": "ISO datetime every subprocessor window has also closed",
             "example": "2026-10-18T09:00:00Z"
           },
+          "outcome": {
+            "type": "string",
+            "description": "What the report may say — pending, complete, or incomplete. Never complete while an owner is unanswered or completeness was waived",
+            "example": "incomplete"
+          },
           "completed_at": {
             "type": "string",
             "nullable": true,
@@ -1166,6 +1183,16 @@
               "type": "string"
             },
             "description": "Owners still blocking completion",
+            "example": [
+              "media"
+            ]
+          },
+          "unanswered_owners": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Owners that never answered — the subset that went silent rather than reporting a failure",
             "example": [
               "media"
             ]

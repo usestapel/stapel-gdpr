@@ -50,12 +50,14 @@ class ErasurePartDTO:
         receipt_at: ISO datetime the owner confirmed, null while pending. Example: 2026-08-24T09:12:00Z
         receipt_id: The owner's own durable proof of erasure. Example: recordings:job-8812
         counts: What the owner removed, by its own count. Example: {"recordings": 3}
+        unanswered: Whether this owner never answered at all — still waiting, or timed out in silence. A failed part answered; this one did not. Example: false
     """
     owner: str
     state: str
     receipt_at: Optional[str]
     receipt_id: str = ''
     counts: dict = field(default_factory=dict)
+    unanswered: bool = False
 
 
 @dataclass
@@ -84,6 +86,7 @@ class ErasureStatusDTO:
         subject_key: The host's id for that subject. Example: 9f1c2d3e
         workspace_id: Workspace the subject belongs to, null when not partitioned. Example: ws-42
         state: One of queued, erasing, deleted, timeout. Example: erasing
+        outcome: What the report may say — pending, complete, or incomplete. Never complete while an owner is unanswered or completeness was waived. Example: incomplete
         origin: Why this erasure exists. Example: user
         requested_at: ISO datetime the erasure was opened. Example: 2026-08-24T09:00:00Z
         due_at: ISO datetime our own purge SLA expires. Example: 2026-09-23T09:00:00Z
@@ -93,6 +96,7 @@ class ErasureStatusDTO:
         parts: Per-owner receipts. Example: []
         obligations: Per-processor deletion windows. Example: []
         unreceipted_owners: Owners still blocking completion. Example: ["media"]
+        unanswered_owners: Owners that never answered — the subset that went silent rather than reporting a failure. Example: ["media"]
     """
     request_id: int
     subject_type: str
@@ -103,11 +107,13 @@ class ErasureStatusDTO:
     requested_at: str
     due_at: str
     fully_erased_by: str
+    outcome: str = 'pending'
     completed_at: Optional[str] = None
     grace_ends_at: Optional[str] = None
     parts: list[ErasurePartDTO] = field(default_factory=list)
     obligations: list[SubprocessorObligationDTO] = field(default_factory=list)
     unreceipted_owners: list[str] = field(default_factory=list)
+    unanswered_owners: list[str] = field(default_factory=list)
 
 
 @dataclass

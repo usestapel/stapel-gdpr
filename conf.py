@@ -12,7 +12,7 @@ Configure in Django settings::
         #   "DATA_OWNERS": {
         #       "recordings": ["account", "workspace", "meeting", "recording"],
         #       "billing":    ["account"],
-        #       "cdn":        {"subject_types": ["account", "file"],
+        #       "media":      {"subject_types": ["account", "file"],
         #                      "kind": "remote", "timeout_hours": 6},
         #   }
         # A plain list is still accepted and means ["account"] for every
@@ -21,7 +21,15 @@ Configure in Django settings::
         # GDPRProvider with that section is registered, 'remote' otherwise)
         # or a dict: {"name": "recordings", "kind": "remote",
         # "timeout_hours": 6, "subject_types": [...]}.
-        "DATA_OWNERS": ["auth", "profiles", {"name": "cdn", "kind": "remote"}],
+        #
+        # The names are the LIBRARIES' own, not app labels — the `cdn` app
+        # owns "media", the `profiles` app owns "profile". A name nothing
+        # declares is inferred remote and times out in silence, so
+        # gdpr.E009 refuses it at boot; an installed owner absent from this
+        # map is a store no erasure ever waits for (gdpr.E010).
+        "DATA_OWNERS": {"auth": ["account"], "profile": ["account"],
+                        "media": {"subject_types": ["account", "file"],
+                                  "kind": "remote"}},
         # Subjects an erasure can be requested for. The account is the
         # historical one; entities were added in 0.5.0 so a host can put a
         # deleted recording/document/file on the same receipts path.
@@ -33,6 +41,15 @@ Configure in Django settings::
         # Bump whenever DATA_OWNERS changes. Stamped onto every closure so
         # an audit can tell which inventory a given erasure was judged by.
         "DATA_OWNERS_VERSION": "2026-08-13.1",
+        # Owner names an INSTALLED library declares that this deployment
+        # deliberately does not ask to erase. Normally there are none: a
+        # library that declares an erasure owner and is not in DATA_OWNERS is
+        # a store that keeps the data forever, which is gdpr.E010. Naming one
+        # here downgrades that to gdpr.W011 — still reported at every boot,
+        # because "we chose this" has to stay visible in the same place the
+        # accident would have been. The name has to be the one the library
+        # declares; there is no wildcard.
+        "DATA_OWNERS_OPT_OUT": [],
         # Grace given to an owner before its erasure part is marked timed
         # out (a timed-out part blocks DELETED just like a failed one).
         "OWNER_TIMEOUT_HOURS": 24,
@@ -128,6 +145,7 @@ gdpr_settings = AppSettings(
     defaults={
         "DATA_OWNERS": [],
         "DATA_OWNERS_VERSION": "",
+        "DATA_OWNERS_OPT_OUT": [],
         "SUBJECT_TYPES": [
             "account", "workspace", "meeting", "recording", "document", "file",
         ],

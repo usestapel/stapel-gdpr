@@ -49,10 +49,19 @@ class LegalHoldAdmin(admin.ModelAdmin):
 class ErasurePartInline(admin.TabularInline):
     model = ErasurePart
     extra = 0
-    readonly_fields = ('owner', 'state', 'kind', 'receipt_id', 'receipt_at', 'deadline', 'note')
+    readonly_fields = (
+        'owner', 'state', 'unanswered_flag', 'kind', 'receipt_id', 'receipt_at',
+        'deadline', 'note',
+    )
+    fields = readonly_fields
     # No has_add/change/delete_permission overrides needed here: ErasurePart
     # is declared @access.ops, so MandateBackend already forbids add/change/delete
     # on it (even for a superuser) at the permission layer the inline consults.
+
+    @admin.display(boolean=True, description='Unanswered')
+    def unanswered_flag(self, obj) -> bool:
+        """Silence, spelled out. 'timeout' is a state name; this is a fact."""
+        return obj.unanswered
 
 
 class SubprocessorObligationInline(admin.TabularInline):
@@ -63,10 +72,26 @@ class SubprocessorObligationInline(admin.TabularInline):
 
 @admin.register(ErasureRequest)
 class ErasureRequestAdmin(StapelModelAdmin):
-    list_display = ('subject_type', 'subject_key', 'state', 'origin', 'requested_at', 'due_at', 'completed_at')
+    list_display = ('subject_type', 'subject_key', 'state', 'outcome_label',
+                    'unanswered_label', 'origin', 'requested_at', 'due_at',
+                    'completed_at')
     list_filter  = ('state', 'subject_type', 'origin')
     search_fields = ('subject_key', 'correlation_id', 'workspace_id')
     inlines = [ErasurePartInline, SubprocessorObligationInline]
+
+    @admin.display(description='Outcome', ordering='state')
+    def outcome_label(self, obj) -> str:
+        """What a report may say. A TIMEOUT row reads 'incomplete' here.
+
+        The state column already existed and was already correct; nobody
+        reading it drew the conclusion, which is the whole finding of the
+        2026-09-07 audit. So the conclusion is a column.
+        """
+        return obj.outcome
+
+    @admin.display(description='Never answered')
+    def unanswered_label(self, obj) -> str:
+        return ', '.join(obj.unanswered_owners) or '—'
 
 
 @admin.register(DataOwnerHealth)

@@ -22,6 +22,26 @@ for that sentence to appear.
   name any key in the bucket and have its bytes copied into a user's export.
 * ``gdpr.W008`` — a data-subject request is past its acknowledgement deadline
   with nothing sent. A statutory clock, visible where deploys are looked at.
+* ``gdpr.E009`` — ``DATA_OWNERS`` names an owner no installed library
+  declares, and an installed library declares a name it was plainly meant to
+  be. A misspelled owner is inferred *remote*, so nothing refuses it: the
+  store is never asked, its part waits out the clock and times out.
+* ``gdpr.E010`` — an installed library declares an erasure owner that
+  ``DATA_OWNERS`` does not list. No receipt slot is ever created for it, so
+  the request has nothing to wait for and reports itself complete over a
+  store that still holds the data.
+* ``gdpr.W011`` — the same, for a name listed in ``DATA_OWNERS_OPT_OUT``:
+  the deployment chose it, and the choice stays visible.
+* ``gdpr.W012`` — an owner claims a subject type the host does not list for
+  it (or does not list at all). That subject's erasures never reach the
+  store, while the same store answers for the subjects the host did list —
+  which is what makes the gap invisible.
+
+E009/E010/W011/W012 are the 2026-09-07 fleet incident, found only by an
+external audit: a host listing ``"profiles"``/``"cdn"`` (the app labels;
+the libraries declare ``"profile"`` and ``"media"``) and omitting ``video``
+and ``agent`` altogether. Four stores were never asked to erase anything and
+every request still ended. See :mod:`stapel_gdpr.declarations`.
 """
 from __future__ import annotations
 
@@ -30,9 +50,15 @@ from datetime import timedelta
 from django.core.checks import Error, Warning as CheckWarning, register
 
 from .conf import gdpr_settings
-from .owners import data_owner_report
+from .declarations import (
+    CANONICAL_SEAM,
+    installed_owner_declarations,
+    nearest_declared_name,
+)
+from .owners import data_owner_report, subject_types
 
 __all__ = [
+    "check_data_owner_names",
     "check_data_owner_registry",
     "check_dsar_deadlines",
     "check_data_owner_liveness",
@@ -182,6 +208,157 @@ def check_data_owner_registry(app_configs=None, **kwargs):
                     id="gdpr.W005",
                 )
             )
+
+    return problems
+
+
+def check_data_owner_names(app_configs=None, **kwargs):
+    """The host's inventory against what the installed libraries declare.
+
+    :func:`check_data_owner_registry` compares ``DATA_OWNERS`` with the
+    providers *registered at runtime*, which is why the 2026-09-07 incident
+    slipped past it: a misspelled name registers nothing, so it is inferred
+    ``remote`` and looks exactly like an owner in another container, and an
+    omitted name has nothing to be absent from. This one compares against the
+    libraries' own declarations (:mod:`stapel_gdpr.declarations`) — static
+    facts of the installed packages, true before any of them is asked
+    anything.
+
+    Silent when no owner library is installed here: that is an ordinary
+    microservices shape (the erasure service holds no stores of its own) and
+    there is nothing to compare against. It is never read as "no owners".
+    """
+    report = data_owner_report()
+    if report.unconfigured:
+        return []  # gdpr.E001 already says the louder thing.
+
+    declarations = installed_owner_declarations()
+    if not declarations:
+        return []
+
+    problems = []
+    host_owners = {owner.name: owner for owner in report.owners}
+    opted_out = {
+        str(name).strip()
+        for name in (gdpr_settings.DATA_OWNERS_OPT_OUT or [])
+        if str(name).strip()
+    }
+
+    # --- gdpr.E009: a name nothing declares, next to one that is declared ---
+    misspelled = []
+    for name in host_owners:
+        if name in declarations:
+            continue
+        nearest = nearest_declared_name(name, declarations)
+        if nearest is None:
+            # Unknown here, but this process cannot tell a typo from an owner
+            # living in another container. gdpr.W006 catches it when it never
+            # answers a probe; guessing would break every microservice.
+            continue
+        misspelled.append((name, nearest, declarations[nearest].source))
+    if misspelled:
+        named = "; ".join(
+            f'"{name}" -> "{nearest}" (declared by {source})'
+            for name, nearest, source in misspelled
+        )
+        problems.append(
+            Error(
+                'STAPEL_GDPR["DATA_OWNERS"] names data owners no installed '
+                f"library declares: {named}.",
+                hint=(
+                    "An owner name that matches nothing registered is "
+                    "inferred 'remote', so nothing refuses it: the store is "
+                    "never asked to erase, its receipt slot waits out "
+                    "OWNER_TIMEOUT_HOURS and the erasure times out. An app "
+                    "label is not an owner name — the 'cdn' app owns 'media', "
+                    "the 'profiles' app owns 'profile'. Use the name the "
+                    f"library declares to {CANONICAL_SEAM}."
+                ),
+                id="gdpr.E009",
+            )
+        )
+
+    # --- gdpr.E010 / gdpr.W011: an installed store nobody asks ---
+    # A name gdpr.E009 already told the host to write is not ALSO a missing
+    # owner: one edit fixes both, and reporting it twice reads as two stores
+    # to go and find.
+    renamed_to = {nearest for _, nearest, _ in misspelled}
+    absent, deliberate = [], []
+    for name, declaration in sorted(declarations.items()):
+        if name in host_owners or name in renamed_to:
+            continue
+        described = f'"{name}"'
+        if declaration.subject_types:
+            described += f" (claims {', '.join(declaration.subject_types)})"
+        described += f", declared by {declaration.source}"
+        (deliberate if name in opted_out else absent).append(described)
+    if absent:
+        problems.append(
+            Error(
+                "Installed libraries declare GDPR data owners that "
+                f'STAPEL_GDPR["DATA_OWNERS"] does not list: {"; ".join(absent)}.',
+                hint=(
+                    "No receipt slot is ever created for an owner the "
+                    "inventory does not name, so the erasure has nothing to "
+                    "wait for and completes over a store that still holds "
+                    "the data — the failure mode has no symptom at all. Add "
+                    "the name (with the subject types it claims) and bump "
+                    'STAPEL_GDPR["DATA_OWNERS_VERSION"], or name it in '
+                    'STAPEL_GDPR["DATA_OWNERS_OPT_OUT"] if this deployment '
+                    "deliberately does not ask it."
+                ),
+                id="gdpr.E010",
+            )
+        )
+    if deliberate:
+        problems.append(
+            CheckWarning(
+                'STAPEL_GDPR["DATA_OWNERS_OPT_OUT"] excludes installed data '
+                f"owners from every erasure: {'; '.join(deliberate)}.",
+                hint=(
+                    "These stores are never asked to erase anything and no "
+                    "erasure waits for them. Remove the opt-out once they "
+                    "are wired, or record why they are exempt."
+                ),
+                id="gdpr.W011",
+            )
+        )
+
+    # --- gdpr.W012: a subject the owner erases and the host never names ---
+    host_subjects = set(subject_types())
+    unlisted = []
+    for name, owner in host_owners.items():
+        declaration = declarations.get(name)
+        if declaration is None or not declaration.subject_types:
+            continue
+        for claimed in declaration.subject_types:
+            if claimed not in owner.subjects:
+                unlisted.append(
+                    f'"{name}" claims {claimed!r}, which its DATA_OWNERS entry '
+                    "does not list"
+                )
+            elif claimed not in host_subjects:
+                unlisted.append(
+                    f'"{name}" claims {claimed!r}, which is not in '
+                    'STAPEL_GDPR["SUBJECT_TYPES"]'
+                )
+    if unlisted:
+        problems.append(
+            CheckWarning(
+                "Declared data owners can erase subject types this host does "
+                f"not ask them about: {'; '.join(unlisted)}.",
+                hint=(
+                    "The owner gets a receipt slot only for the subjects its "
+                    "DATA_OWNERS entry lists, so those erasures never reach "
+                    "it — while the same owner answers for the subjects that "
+                    "were listed, which is what keeps the gap invisible. "
+                    'Give the entry its subject types ({"cdn": ["account", '
+                    '"workspace", "file"]}) and add any missing type to '
+                    'STAPEL_GDPR["SUBJECT_TYPES"].'
+                ),
+                id="gdpr.W012",
+            )
+        )
 
     return problems
 
@@ -379,6 +556,7 @@ def check_dsar_deadlines(app_configs=None, databases=None, **kwargs):
 def register_checks() -> None:
     """Called from ``AppConfig.ready``; idempotent."""
     register(check_data_owner_registry, "gdpr")
+    register(check_data_owner_names, "gdpr")
     register(check_reregistration_hashes, "gdpr", "database")
     register(check_data_owner_liveness, "gdpr", "database")
     register(check_dsar_deadlines, "gdpr", "database")
