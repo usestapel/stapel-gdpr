@@ -13,7 +13,7 @@ over an owner that never answered.
 
 ### The incident
 
-A fleet deployment (darom) listed `"profiles"` and `"cdn"` in
+A client fleet deployment listed `"profiles"` and `"cdn"` in
 `STAPEL_GDPR["DATA_OWNERS"]`. Those are **app labels**. The libraries declare
 `"profile"` (`stapel_profiles.erasure.GDPR_OWNER`) and `"media"`
 (`stapel_cdn.erasure.OWNER`). The same settings dict omitted `video` and

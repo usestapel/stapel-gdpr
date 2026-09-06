@@ -149,7 +149,7 @@ class TestUnknownOwnerName:
     def test_the_app_label_is_reported_with_the_name_it_should_have_been(
         self, settings, blobs_app,
     ):
-        """darom's ``"cdn"`` where the library declares ``"media"``."""
+        """The incident's ``"cdn"`` where the library declares ``"media"``."""
         settings.STAPEL_GDPR = gdpr_conf(
             DATA_OWNERS={"blobs": ["account", "workspace", "file"]},
             DATA_OWNERS_VERSION="incident-1",
@@ -204,7 +204,7 @@ class TestUnknownOwnerName:
 
 class TestUndeclaredInstalledOwner:
     def test_an_omitted_library_is_an_error(self, settings, blobs_app):
-        """darom's missing ``video`` and ``agent``: erased by nobody, ever."""
+        """The incident's missing ``video`` and ``agent``: erased by nobody, ever."""
         settings.STAPEL_GDPR = gdpr_conf(
             DATA_OWNERS={"auth": ["account"]},
             DATA_OWNERS_VERSION="incident-3",
