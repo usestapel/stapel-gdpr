@@ -32,6 +32,84 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Install
+        run: pip install -e ".[all]" || pip install -e .
+
+      - name: Pin Django to the matrix floor
+        if: matrix.django-version != ''
+        run: |
+          pip install "Django~=${{ matrix.django-version }}.0"
+          python -c "import django; print('Django', django.get_version())"
+
+      - name: Lint
+        run: |
+          pip install ruff --quiet
+          ruff check . --select E,F,W --ignore E501
+
+      - name: migration-lint (expand/contract gate, release-management.md §3)
+        run: |
+          pip install stapel-tools --quiet
+          stapel-migration-lint . --strict
+
+      - name: Import check
+        run: python -c "import stapel_gdpr; print('import OK')"
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-django pytest-cov
+
+      - name: Tests with coverage
+        run: |
+          pytest tests/ \
+            --cov=stapel_gdpr \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --junitxml=junit.xml \
+            -o junit_family=legacy \
+            -v
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        with:
+          files: coverage.xml
+          flags: stapel-gdpr
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results to Codecov
+        uses: codecov/test-results-action@v1
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  core-main:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # Base rows take whatever Django the dependency graph resolves —
+        # latest. The include rows pin the FLOOR releases stapel-core's
+        # `Django>=5.1,<6.1` claims support for: until they ran, "supported
+        # since 5.1" was a statement nothing had ever executed. Pinned on
+        # 3.12 (the contract/monolith pin) rather than crossed with every
+        # interpreter — Django 5.1 predates 3.13/3.14 support entirely, so
+        # the full product would be red for reasons that are not ours.
+        include:
+          - python-version: "3.12"
+            django-version: "5.1"
+          - python-version: "3.12"
+            django-version: "5.2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
       - name: Install stapel-core
         run: pip install git+https://github.com/usestapel/stapel-core.git
 
