@@ -10,11 +10,11 @@
     },
     "error.401.gdpr.closure_token_expired": {
       "hash": "9fd1d238d8ef57aa",
-      "origin": "imported"
+      "origin": "seed:stapel-builtin"
     },
     "error.401.gdpr.closure_token_invalid": {
       "hash": "883c48b8a5b03d2f",
-      "origin": "imported"
+      "origin": "seed:stapel-builtin"
     },
     "error.403.gdpr.account_closed": {
       "hash": "365347d2841a0dd5",
@@ -22,7 +22,7 @@
     },
     "error.403.gdpr.closure_token_scope": {
       "hash": "f0fd4723688dbe90",
-      "origin": "imported"
+      "origin": "seed:stapel-builtin"
     },
     "error.403.gdpr.erasure_forbidden": {
       "hash": "b98e907190ac0c8e",
@@ -84,11 +84,11 @@
     },
     "error.401.gdpr.closure_token_expired": {
       "hash": "9fd1d238d8ef57aa",
-      "origin": "imported"
+      "origin": "seed:stapel-builtin"
     },
     "error.401.gdpr.closure_token_invalid": {
       "hash": "883c48b8a5b03d2f",
-      "origin": "imported"
+      "origin": "seed:stapel-builtin"
     },
     "error.403.gdpr.account_closed": {
       "hash": "365347d2841a0dd5",
@@ -96,7 +96,7 @@
     },
     "error.403.gdpr.closure_token_scope": {
       "hash": "f0fd4723688dbe90",
-      "origin": "imported"
+      "origin": "seed:stapel-builtin"
     },
     "error.403.gdpr.erasure_forbidden": {
       "hash": "b98e907190ac0c8e",

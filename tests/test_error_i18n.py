@@ -15,13 +15,12 @@ Nothing here is LLM-generated, so there is no machine-translation table to
 maintain: a new key gets its translations in stapel-translate first, and this
 module seeds from there.
 
-The exception, recorded rather than laundered: the three
-``error.*.gdpr.closure_token_*`` keys added in 0.5.5 are ``origin: imported``.
-The corpus does not carry them yet — its own gate requires the key set of
-``en.json`` in all twenty languages — so they were authored here to keep the
-coverage gate honest. ``imported`` is the label stapel-core gives a value whose
-authorship it cannot verify, and it is protected from re-derivation: once
-stapel-translate adopts the strings, a regen keeps these two and seeds the rest.
+That order is enforced, not described: every owned key must be present in
+the corpus for every language the corpus ships, and every owned value in
+``.state.json`` must carry a seeded (or human) origin. An ``imported`` value
+would mean a string was authored here to get past coverage while the corpus
+stayed blind to it — 0.5.5 shipped three that way, and the corpus only learned
+of them from a changelog note.
 
 Regenerate after adding/changing an error key or a translation:
 
@@ -49,21 +48,34 @@ LANGUAGES = ["en", "ru", "es"]
 #: The languages that need a catalog — everything but the source language.
 TARGET_LANGUAGES = [lang for lang in LANGUAGES if lang != "en"]
 
-#: stapel-translate builtin fixtures (the curated seed corpus). Overridable for
-#: an out-of-tree checkout via STAPEL_TRANSLATE_FIXTURES.
-_FIXTURES = Path(
-    os.environ.get(
-        "STAPEL_TRANSLATE_FIXTURES",
-        REPO.parent / "stapel-translate" / "fixtures" / "builtin",
+def _corpus_dir() -> Path:
+    """The stapel-translate builtin fixtures (the curated seed corpus).
+
+    STAPEL_TRANSLATE_FIXTURES, else a sibling checkout, else the installed
+    ``stapel_translate`` package. Raises when none is present: a coverage
+    test with no corpus to divide by must fail, not skip.
+    """
+    explicit = os.environ.get("STAPEL_TRANSLATE_FIXTURES")
+    if explicit:
+        return Path(explicit)
+    sibling = REPO.parent / "stapel-translate" / "fixtures" / "builtin"
+    if sibling.is_dir():
+        return sibling
+    from stapel_translate.management.commands.load_builtin_translations import (
+        FIXTURES_DIR,
     )
-)
+
+    return Path(FIXTURES_DIR)
 
 
 def _seed_from_fixtures(lang: str) -> dict[str, str]:
     """Flat ``{error.*: text}`` seed from the builtin fixtures for *lang*."""
     import json
 
-    path = _FIXTURES / f"{lang}.json"
+    try:
+        path = _corpus_dir() / f"{lang}.json"
+    except ImportError:
+        return {}
     if not path.is_file():
         return {}
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -152,3 +164,43 @@ def test_translations_preserve_placeholders():
             if key in source:
                 assert set(params_of(text)) == set(params_of(source[key])), \
                     f"{lang}: {key}"
+
+
+def _owned() -> dict[str, str]:
+    from stapel_core.i18n import owned_keys, owner_of_dir, source_owners
+
+    source = owned_keys(
+        source_texts("errors"), source_owners("errors"), owner_of_dir(TRANSLATIONS),
+    )
+    assert source, "ownership resolved to nothing — is stapel_gdpr installed?"
+    return source
+
+
+def test_corpus_carries_every_owned_key_in_every_corpus_language():
+    """The corpus is where a gdpr string is born: all owned keys, every language it ships."""
+    import json
+
+    corpus = _corpus_dir()
+    fixtures = sorted(corpus.glob("*.json"))
+    assert len(fixtures) >= 3, f"no corpus at {corpus}"
+    problems = []
+    for path in fixtures:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        missing = [k for k in _owned() if not (data.get(k) or "").strip()]
+        if missing:
+            problems.append(f"{path.stem}: {missing}")
+    assert problems == [], "owned keys the corpus does not carry: " + "; ".join(problems)
+
+
+def test_owned_keys_are_seeded_from_the_corpus():
+    """No owned value may be ``imported``: authored here means the corpus is blind to it."""
+    from stapel_core.i18n.catalogs import StateSidecar, is_reviewed, is_seeded
+
+    state = StateSidecar(TRANSLATIONS / ".state.json")
+    problems = []
+    for lang in TARGET_LANGUAGES:
+        for key in _owned():
+            origin = (state.get("errors", lang, key) or {}).get("origin")
+            if not (is_seeded(origin) or is_reviewed(origin)):
+                problems.append(f"{lang}:{key}={origin}")
+    assert problems == [], "not seeded from the corpus: " + ", ".join(problems)

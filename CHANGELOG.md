@@ -5,6 +5,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-09-07
+
+### Changed — the corpus-first order for error strings is now a gate
+
+0.5.5 authored its three `closure_token_*` strings here (`origin: imported`)
+because the stapel-translate corpus did not carry them, and left the corpus a
+changelog note. stapel-translate 0.7.2 adopted the strings, so the three
+entries in `translations/.state.json` are re-derived from the corpus and now
+read `seed:stapel-builtin` like the other fifteen; `errors.{ru,es}.json` are
+byte-identical to 0.5.5.
+
+Two tests in `tests/test_error_i18n.py` make that order the rule rather than
+the note:
+
+- `test_corpus_carries_every_owned_key_in_every_corpus_language` — every key
+  this module owns must be present in every `fixtures/builtin/<lang>.json` the
+  corpus ships (twenty languages today, not just the `ru`/`es` catalogs here).
+  The corpus is found via `STAPEL_TRANSLATE_FIXTURES`, a sibling checkout, or
+  the installed `stapel_translate` package — and a missing corpus fails the
+  test rather than skipping it, so CI installs `stapel-translate`.
+- `test_owned_keys_are_seeded_from_the_corpus` — no owned value may carry
+  `origin: imported`. A string authored on this side to get past coverage is
+  exactly the string the corpus never learns about.
+
+A new gdpr error key therefore lands in stapel-translate first, releases
+there, and only then passes here. Tests, CI and provenance only: no code,
+schema or migration changed.
+
 ## [0.5.5] — 2026-09-07
 
 Closing an account no longer locks the person out of the grace period the

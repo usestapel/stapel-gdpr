@@ -119,7 +119,9 @@ jobs:
         run: pip install stapel-tools --quiet
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov
+        # stapel-translate carries the builtin corpus every owned error string seeds
+        # from; tests/test_error_i18n.py divides its coverage gate by it.
+        run: pip install pytest pytest-django pytest-cov stapel-translate
 
       - name: Tests with coverage
         run: |

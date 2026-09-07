@@ -55,7 +55,9 @@ jobs:
         run: python -c "import stapel_gdpr; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov
+        # stapel-translate carries the builtin corpus every owned error string seeds
+        # from; tests/test_error_i18n.py divides its coverage gate by it.
+        run: pip install pytest pytest-django pytest-cov stapel-translate
 
       - name: Tests with coverage
         run: |
@@ -136,7 +138,9 @@ jobs:
         run: python -c "import stapel_gdpr; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov
+        # stapel-translate carries the builtin corpus every owned error string seeds
+        # from; tests/test_error_i18n.py divides its coverage gate by it.
+        run: pip install pytest pytest-django pytest-cov stapel-translate
 
       - name: Tests with coverage
         run: |
