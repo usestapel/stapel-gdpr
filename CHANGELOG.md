@@ -5,6 +5,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.5.7] — 2026-09-07
+
+### Fixed — 0.5.6 never reached PyPI
+
+The corpus lookup 0.5.6 added fell back to importing
+`stapel_translate.management.commands.load_builtin_translations` when no
+sibling checkout exists — which is every CI leg — and that import pulls in
+`stapel_translate.models`, a `RuntimeError` under this module's settings
+because stapel_translate is not an installed app here. `test_regen` and the
+corpus coverage test went red in CI while green locally, where the sibling
+path was always taken. The fallback now resolves the fixtures as package data
+via `importlib.resources`, which imports nothing Django-bound. Tests only.
+
 ## [0.5.6] — 2026-09-07
 
 ### Changed — the corpus-first order for error strings is now a gate

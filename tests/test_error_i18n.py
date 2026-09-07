@@ -61,11 +61,11 @@ def _corpus_dir() -> Path:
     sibling = REPO.parent / "stapel-translate" / "fixtures" / "builtin"
     if sibling.is_dir():
         return sibling
-    from stapel_translate.management.commands.load_builtin_translations import (
-        FIXTURES_DIR,
-    )
+    # Package data only: importing stapel_translate's models under this
+    # module's settings would raise, since it is not an installed app here.
+    import importlib.resources as resources
 
-    return Path(FIXTURES_DIR)
+    return Path(str(resources.files("stapel_translate"))) / "fixtures" / "builtin"
 
 
 def _seed_from_fixtures(lang: str) -> dict[str, str]:
