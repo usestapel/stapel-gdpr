@@ -50,7 +50,20 @@ def settings_kwargs(
             "EXCEPTION_HANDLER": "stapel_core.django.api.errors.stapel_exception_handler",
         }
     else:
-        rest_framework = None
+        # Not "no dict": DRF's defaults everywhere EXCEPT the one key any
+        # settings module that writes REST_FRAMEWORK must carry. Absent, DRF
+        # falls back to its own exception handler and every refusal no view
+        # code raises — 401/403 from authenticators and permission classes,
+        # 404 from get_object_or_404, 405/406/415 from dispatch, 429 from a
+        # throttle — answers a bare {"detail": ...} instead of the fleet
+        # envelope (stapel_core.error_envelope.W001). Read off core's own
+        # preset rather than re-typed; importing it reads no settings, so the
+        # hazard the contract branch inlines against does not apply.
+        from stapel_core.testing import BASE_REST_FRAMEWORK
+
+        rest_framework = {
+            "EXCEPTION_HANDLER": BASE_REST_FRAMEWORK["EXCEPTION_HANDLER"],
+        }
 
     kwargs = dict(
         SECRET_KEY="test-secret-key-not-for-production",

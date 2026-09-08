@@ -97,6 +97,24 @@ class TestExportAPI:
         resp = api_client.post("/gdpr/api/v1/user/data-export/request")
         assert resp.status_code in (401, 403)
 
+    def test_unauthenticated_refusal_is_the_fleet_envelope(self, api_client, db):
+        """The refusal body, not only its status code.
+
+        No line of ``views.py`` builds this response: DRF's permission layer
+        raises it, and the only seam that dresses it is
+        ``REST_FRAMEWORK["EXCEPTION_HANDLER"]``. Until this harness carried
+        that key DRF's own handler answered ``{"detail": "..."}`` here — the
+        shape a frontend reading ``localizable_error`` cannot translate — and
+        the test above could not tell, because a status code is the same
+        either way. ``stapel_core.error_envelope.W001`` reports the settings
+        hole; this asserts the behaviour it costs.
+        """
+        resp = api_client.post("/gdpr/api/v1/user/data-export/request")
+        assert resp.status_code in (401, 403), resp.content
+        assert "localizable_error" in resp.data, resp.data
+        assert resp.data["localizable_error"].startswith("error."), resp.data
+        assert set(resp.data) >= {"localizable_error", "error", "params"}, resp.data
+
 
 @pytest.mark.django_db
 class TestClosureAPI:
