@@ -21,7 +21,7 @@ def add_missing_columns(apps, schema_editor):
             table = model._meta.db_table
             if table not in tables:
                 # 0001 edits sometimes added whole models (e.g. gdpr_legalhold
-                # was missing entirely on the ironmemo stand) — create it too.
+                # was missing entirely on a client stand) — create it too.
                 print(f"  gdpr: table {table} was missing — creating")
                 schema_editor.create_model(model)
                 continue
