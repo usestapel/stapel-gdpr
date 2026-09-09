@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.5.10] — 2026-09-10
+
+### Fixed — every view a guest passes now says so, and the sweep asks the gate instead of reading it
+
+Patch. No URL, request or response shape changes; five views gain a
+`stapel_anonymous_access` declaration and the module's guest sweep is
+rewritten to run the permission stack instead of inspecting it.
+
+0.5.9 declared the two erasure read views after `stapel_core.adoption.W002`
+named them. Re-auditing every view in `views.py` against the same two shapes —
+*a guest passes the gate* and *an id from the URL is not scoped to the caller*
+— found the second shape nowhere (every remaining lookup is keyed on
+`request.user.pk`, the only path parameters left are `<int:dsar_id>` and the
+internal part-ready hook, both staff/service-gated), and the first shape in
+**five more views** that W002 cannot see:
+
+* `DataExportRequestView`, `DataExportStatusView`, `DataExportDownloadView`,
+  `AccountCloseView` — a guest belongs here (its account holds rows of its own
+  and closing it is the one erasure a guest can ask for) and every lookup is
+  keyed on `request.user.pk`: `ANONYMOUS_ALLOWED`;
+* `ErasureRequestView` — the gate is `erasure_authorized` in the body, the
+  host's `ERASURE_AUTHORIZER`, staff-only until a host replaces it:
+  `ANONYMOUS_DENIED`.
+
+**Why the check was silent on them.** `stapel_core.adoption` reads a view green
+as soon as any second permission class stands beside `IsAuthenticated`, on the
+argument that a second class is a more specific statement than "is logged in".
+`AccountNotClosed` is not: it asks whether an account is being erased, an
+orthogonal question every guest passes. Those five views carry
+`[IsAuthenticated, AccountNotClosed]`, so the module's whole user-facing
+surface sat in the check's blind spot while the two views without the
+companion were reported.
+
+`test_every_view_a_guest_passes_says_so` closes it here: for each view this
+module routes to, it runs the real permission stack against an unauthenticated
+caller and against a guest session, and requires a declaration from any view
+that refuses the first and admits the second. A view that admits both is
+public and the axis says nothing about it. The test is red on 0.5.9 with those
+five names.
+
+`test_one_account_cannot_read_anothers_erasure` pins the other shape at the
+HTTP boundary for a full account, next to the guest walk 0.5.9 added: a
+neighbour asking for someone else's `<int:request_id>` gets 404 with
+`error.404.gdpr.erasure_not_found`, never 403 — the id space must not answer
+"this one exists".
+
 ## [0.5.9] — 2026-09-10
 
 ### Fixed — the two erasure read views say what they mean by a guest, and refuse an erasing account

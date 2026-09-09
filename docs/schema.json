@@ -917,7 +917,7 @@
     "/gdpr/api/v1/user/data-export/status": {
       "get": {
         "operationId": "gdpr_api_v1_user_data_export_status_retrieve",
-        "description": "Base view exposing serializer seams.\n\nEvery concrete view declares ``request_serializer_class`` /\n``response_serializer_class`` (``None`` when that direction carries no\nserialized payload). Subclasses may swap either class attribute — or\noverride the getters — to customize the request/response envelopes\nwithout rewriting the method bodies.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
+        "description": "The caller's own latest export — guests included, same as opening one.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
         "summary": "Get data export status",
         "tags": [
           "GDPR"

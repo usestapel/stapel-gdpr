@@ -32,6 +32,19 @@ def _owners(settings):
     )
 
 
+def _module_views(patterns):
+    """Every view class this module routes to, each one once."""
+    seen = {}
+    for pattern in patterns:
+        view_cls = getattr(getattr(pattern, "callback", None), "cls", None)
+        if view_cls is None:
+            continue
+        if not view_cls.__module__.startswith("stapel_gdpr"):
+            continue  # the generated swagger views are not ours to declare for
+        seen.setdefault(view_cls.__name__, view_cls)
+    return [seen[name] for name in sorted(seen)]
+
+
 def _closing(user_id, status):
     from django.utils import timezone
 
@@ -65,6 +78,25 @@ class TestAGuestSessionReachingTheErasureViews:
             "recording", "rec-1", requested_by=user.pk,
         )
         resp = guest_client.get(STATUS_URL.format(pk=theirs.pk))
+        assert resp.status_code == 404
+        assert resp.json()["localizable_error"] == "error.404.gdpr.erasure_not_found"
+
+    def test_one_account_cannot_read_anothers_erasure(self, api_client, user, db):
+        """The same walk, by a full account rather than a guest.
+
+        ``<int:request_id>`` is a dense id space, so "is logged in" cannot be
+        the gate for either kind of session.
+        """
+        from django.contrib.auth import get_user_model
+
+        theirs = gdpr_orchestrator.request_erasure(
+            "recording", "rec-9", requested_by=user.pk,
+        )
+        neighbour = get_user_model().objects.create_user(
+            username="neighbour", email="neighbour@example.com", password="pw-1234",
+        )
+        api_client.force_authenticate(user=neighbour)
+        resp = api_client.get(STATUS_URL.format(pk=theirs.pk))
         assert resp.status_code == 404
         assert resp.json()["localizable_error"] == "error.404.gdpr.erasure_not_found"
 
@@ -137,6 +169,50 @@ class TestTheModuleHasNoUndeclaredView:
             if "stapel_gdpr" in f.msg
         ]
         assert findings == [], "\n".join(f.msg for f in findings)
+
+    def test_every_view_a_guest_passes_says_so(self, rf, guest):
+        """The same question asked of the gate stack instead of its spelling.
+
+        The check above reads a view green as soon as *any* second permission
+        class stands beside ``IsAuthenticated``, on the argument that a second
+        class is a more specific statement. ``AccountNotClosed`` is not: it
+        asks whether an account is being erased, an orthogonal question that a
+        guest passes. So every user-facing view in this module is invisible to
+        that check and still admits guests.
+
+        This one runs the gate: a view that refuses an unauthenticated caller
+        and admits a guest session must carry a declaration. A view that
+        admits both is simply public, and the guest axis says nothing about
+        it.
+        """
+        from django.contrib.auth.models import AnonymousUser
+        from stapel_core.django.api.permissions import (
+            ANONYMOUS_DECLARATION_ATTR,
+            ANONYMOUS_DECLARATIONS,
+        )
+
+        from stapel_gdpr import urls_v1
+
+        def admits(view_cls, principal):
+            request = rf.get("/")
+            request.user = principal
+            view = view_cls()
+            return all(
+                gate().has_permission(request, view)
+                for gate in view_cls.permission_classes
+            )
+
+        undeclared = []
+        for view_cls in _module_views(urls_v1.urlpatterns):
+            if admits(view_cls, AnonymousUser()) or not admits(view_cls, guest):
+                continue
+            declaration = getattr(view_cls, ANONYMOUS_DECLARATION_ATTR, None)
+            if declaration not in ANONYMOUS_DECLARATIONS:
+                undeclared.append(view_cls.__name__)
+        assert undeclared == [], (
+            "a guest session passes the gate of these views and nothing in "
+            f"their source says whether that was meant: {undeclared}"
+        )
 
 
 @pytest.mark.django_db

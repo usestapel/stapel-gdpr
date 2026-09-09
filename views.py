@@ -20,7 +20,11 @@ from stapel_core.django.api.errors import (
     error_401_unauthorized,
     error_500_internal,
 )
-from stapel_core.django.api.permissions import ANONYMOUS_ALLOWED, IsServiceRequest
+from stapel_core.django.api.permissions import (
+    ANONYMOUS_ALLOWED,
+    ANONYMOUS_DENIED,
+    IsServiceRequest,
+)
 from stapel_core.django.captcha import captcha_protected
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
@@ -116,7 +120,14 @@ class GDPRAPIView(APIView):
 
 
 class DataExportRequestView(GDPRAPIView):
+    """Art. 15/20 for the caller's own account.
+
+    Guests reach this on purpose: a guest session is a real account row
+    with rows of its own, and the export is keyed on ``request.user.pk``.
+    """
+
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     request_serializer_class = None
     response_serializer_class = ExportRequestSerializer
 
@@ -152,7 +163,10 @@ class DataExportRequestView(GDPRAPIView):
 
 
 class DataExportStatusView(GDPRAPIView):
+    """The caller's own latest export — guests included, same as opening one."""
+
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     request_serializer_class = None
     response_serializer_class = ExportStatusSerializer
 
@@ -215,6 +229,9 @@ class DataExportDownloadView(GDPRAPIView):
     """
 
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    # A guest downloads its own archive: the token lookup is bound to
+    # ``request.user.pk``, so the session kind changes nothing here.
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     # Token is a raw body field; the payload is a file.
     request_serializer_class = None
     response_serializer_class = None
@@ -416,7 +433,15 @@ def _closure_subject(request):
 
 
 class AccountCloseView(GDPRAPIView):
+    """Art. 17 for the caller's own account.
+
+    Guests reach this on purpose — closing its own account is the one
+    erasure a guest session can ask for, and the erasure it opens is what
+    ``ErasureStatusView`` then lets it watch.
+    """
+
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     request_serializer_class = None
     response_serializer_class = ClosureStatusSerializer
 
@@ -737,6 +762,10 @@ class ErasureRequestView(GDPRAPIView):
     """
 
     permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    # This view erases whatever the caller names, so the gate is
+    # ``erasure_authorized`` in the body — the host's ERASURE_AUTHORIZER,
+    # staff-only until a host replaces it, which no guest session is.
+    stapel_anonymous_access = ANONYMOUS_DENIED
     request_serializer_class = None
     response_serializer_class = ErasureStatusSerializer
 
