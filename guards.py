@@ -29,6 +29,8 @@ __all__ = [
     "AccountClosureGuardMiddleware",
     "AccountNotClosed",
     "erasure_authorized",
+    "erasure_visible",
+    "own_erasures",
 ]
 
 
@@ -65,6 +67,45 @@ def erasure_authorized(request, subject_type: str, subject_key: str) -> bool:
     except Exception as e:
         logger.error('STAPEL_GDPR["ERASURE_AUTHORIZER"]=%r raised: %s', dotted, e)
         return False
+
+
+def erasure_visible(request, erasure) -> bool:
+    """Whether *request* may read this one erasure row.
+
+    ``GET /erasures/<int:request_id>`` takes an integer from the path, so
+    "is logged in" is not a gate: without an owner test any session — a guest
+    session included, since a guest is authenticated — walks the id space and
+    reads every deletion in the deployment. The requester sees their own;
+    anyone else needs the same authority that could have opened it.
+
+    A named predicate rather than two lines inside the view: it is the one
+    place the answer lives, it can be tested without HTTP, and the next view
+    that reads an erasure by id inherits the decision instead of re-deriving
+    it.
+    """
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated:
+        return False
+    # requested_by is a UUIDField and a host's user pk need not be one;
+    # compare the rendered values so a str/UUID skew cannot read as a match.
+    if erasure.requested_by is not None and str(erasure.requested_by) == str(user.pk):
+        return True
+    return erasure_authorized(request, erasure.subject_type, erasure.subject_key)
+
+
+def own_erasures(request):
+    """The erasures *request*'s own user opened — never anyone else's.
+
+    Deliberately not :func:`erasure_visible` over the whole table: "my
+    erasures" is the caller's pending-deletion list, not everything their
+    authority could reach, so a staff caller sees only their own here.
+    """
+    from .models import ErasureRequest
+
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated or user.pk is None:
+        return ErasureRequest.objects.none()
+    return ErasureRequest.objects.filter(requested_by=user.pk)
 
 
 class AccountNotClosed(permissions.BasePermission):

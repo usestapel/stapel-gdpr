@@ -20,7 +20,7 @@ from stapel_core.django.api.errors import (
     error_401_unauthorized,
     error_500_internal,
 )
-from stapel_core.django.api.permissions import IsServiceRequest
+from stapel_core.django.api.permissions import ANONYMOUS_ALLOWED, IsServiceRequest
 from stapel_core.django.captcha import captcha_protected
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
@@ -62,7 +62,12 @@ from .errors import (
     ERR_503_CLOSURE_UNAVAILABLE,
     SessionRevocationUnavailable,
 )
-from .guards import AccountNotClosed, erasure_authorized
+from .guards import (
+    AccountNotClosed,
+    erasure_authorized,
+    erasure_visible,
+    own_erasures,
+)
 from .lifecycle import is_access_denied
 from .models import (
     AccountClosureRequest,
@@ -793,9 +798,16 @@ class ErasureRequestView(GDPRAPIView):
 
 
 class ErasureStatusView(GDPRAPIView):
-    """State, receipts, obligations and `fully_erased_by` for one erasure."""
+    """State, receipts, obligations and `fully_erased_by` for one erasure.
 
-    permission_classes = [permissions.IsAuthenticated]
+    Guests reach this on purpose: a guest session can close its own account
+    and must be able to watch that erasure. What bounds them is not the gate
+    but ``erasure_visible`` — the row must be theirs, or their authority must
+    be one that could have opened it.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     request_serializer_class = None
     response_serializer_class = ErasureStatusSerializer
 
@@ -806,22 +818,23 @@ class ErasureStatusView(GDPRAPIView):
     )
     def get(self, request: Request, request_id: int):  # noqa: R007
         erasure = ErasureRequest.objects.filter(pk=request_id).first()
-        if erasure is None:
-            return StapelErrorResponse(404, ERR_404_ERASURE_NOT_FOUND)
-        # A requester sees their own; anyone else needs the same authority
-        # that could have opened it. Otherwise the endpoint enumerates every
-        # deletion in the deployment by integer id.
-        if str(erasure.requested_by) != str(request.user.pk) and not erasure_authorized(
-            request, erasure.subject_type, erasure.subject_key,
-        ):
+        # 404, not 403, for a row the caller may not see: the id space must
+        # not answer "this one exists".
+        if erasure is None or not erasure_visible(request, erasure):
             return StapelErrorResponse(404, ERR_404_ERASURE_NOT_FOUND)
         return StapelResponse(self.get_response_serializer_class()(_erasure_dto(erasure)))
 
 
 class MyErasuresView(GDPRAPIView):
-    """The caller's own erasures — the "pending deletion" list a UI shows."""
+    """The caller's own erasures — the "pending deletion" list a UI shows.
 
-    permission_classes = [permissions.IsAuthenticated]
+    Guests reach this on purpose, and a guest's list is their own: the rows
+    come from ``own_erasures``, which is keyed on the caller's pk and has no
+    parameter an id could be walked through.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, AccountNotClosed]
+    stapel_anonymous_access = ANONYMOUS_ALLOWED
     request_serializer_class = None
     response_serializer_class = ErasureStatusSerializer
 
@@ -831,9 +844,7 @@ class MyErasuresView(GDPRAPIView):
         tags=["GDPR"],
     )
     def get(self, request: Request):  # noqa: R007
-        rows = ErasureRequest.objects.filter(
-            requested_by=request.user.pk,
-        ).prefetch_related("parts", "obligations")
+        rows = own_erasures(request).prefetch_related("parts", "obligations")
         serializer = self.get_response_serializer_class()(
             [_erasure_dto(row) for row in rows], many=True,
         )

@@ -107,6 +107,19 @@ def user(db):
 
 
 @pytest.fixture
+def guest(db):
+    """A guest session's user — a real row, and ``is_authenticated`` is True.
+
+    The distinction this fixture exists for: ``AnonymousUser`` fails
+    ``IsAuthenticated``, a guest passes it. A test that only exercises the
+    former proves nothing about a deployment with ``AUTH_ANONYMOUS`` on.
+    """
+    from django.contrib.auth import get_user_model
+
+    return get_user_model().create_anonymous_user()
+
+
+@pytest.fixture
 def api_client():
     from rest_framework.test import APIClient
 
@@ -117,6 +130,15 @@ def api_client():
 def authed_client(api_client, user):
     api_client.force_authenticate(user=user)
     return api_client
+
+
+@pytest.fixture
+def guest_client(guest):
+    from rest_framework.test import APIClient
+
+    client = APIClient()
+    client.force_authenticate(user=guest)
+    return client
 
 
 @pytest.fixture

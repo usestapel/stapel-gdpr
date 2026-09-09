@@ -357,7 +357,7 @@
     "/gdpr/api/v1/erasures/{request_id}": {
       "get": {
         "operationId": "gdpr_api_v1_erasures_retrieve",
-        "description": "State, receipts, obligations and `fully_erased_by` for one erasure.\n\n**Permissions:** `IsAuthenticated`",
+        "description": "State, receipts, obligations and `fully_erased_by` for one erasure.\n\nGuests reach this on purpose: a guest session can close its own account\nand must be able to watch that erasure. What bounds them is not the gate\nbut ``erasure_visible`` — the row must be theirs, or their authority must\nbe one that could have opened it.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
         "summary": "Get erasure status",
         "parameters": [
           {
@@ -498,7 +498,7 @@
     "/gdpr/api/v1/me/erasures": {
       "get": {
         "operationId": "gdpr_api_v1_me_erasures_list",
-        "description": "The caller's own erasures — the \"pending deletion\" list a UI shows.\n\n**Permissions:** `IsAuthenticated`",
+        "description": "The caller's own erasures — the \"pending deletion\" list a UI shows.\n\nGuests reach this on purpose, and a guest's list is their own: the rows\ncome from ``own_erasures``, which is keyed on the caller's pk and has no\nparameter an id could be walked through.\n\n**Permissions:** `IsAuthenticated, AccountNotClosed`",
         "summary": "List my erasure requests",
         "tags": [
           "GDPR"
@@ -1490,7 +1490,7 @@
           },
           "error_language": {
             "type": "string",
-            "description": "Active Django locale `error` was rendered in (e.g"
+            "description": "The language `error` is written in (e.g. 'en', 'ru'),"
           }
         },
         "required": [

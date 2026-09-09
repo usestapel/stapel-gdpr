@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.5.9] — 2026-09-10
+
+### Fixed — the two erasure read views say what they mean by a guest, and refuse an erasing account
+
+Patch. No URL, request or response shape changes; two views gain a permission
+class and a declaration, and one predicate moves out of a view body.
+
+`stapel_core.adoption.W002` reported `ErasureStatusView` and `MyErasuresView`
+on a live stand: their whole gate was a bare `IsAuthenticated` while the
+`AUTH_ANONYMOUS` axis was on, and a guest session is authenticated. The check
+reports silence, not a hole — and here there was no hole. `ErasureStatusView`
+already scoped its `<int:request_id>` lookup to the caller (own row, or the
+`ERASURE_AUTHORIZER` authority that could have opened it) and answered 404
+otherwise; `MyErasuresView` already filtered on `requested_by`. Nothing
+enumerable, then or now.
+
+What was actually wrong is what the silence hid:
+
+* **Guests were admitted by accident, not by decision.** They belong here — a
+  guest session can close its own account, and that closure's erasure carries
+  the guest's pk — so both views now say so with
+  `stapel_anonymous_access = ANONYMOUS_ALLOWED`, and the scope that makes it
+  safe is named in the class docstring instead of implied.
+* **`AccountNotClosed` was missing.** `guards.py` claims that permission is
+  "already applied to every user-facing view in this module"; these two were
+  the exceptions. An account past its grace and in DELETING could still list
+  and read erasures while its export and closure siblings refused it. Any
+  deployment running `AccountClosureGuardMiddleware` never saw the gap; the
+  module now holds the invariant on its own.
+* **The ownership test lived inside a view.** It is now
+  `guards.erasure_visible(request, erasure)` beside `erasure_authorized`, with
+  `guards.own_erasures(request)` for the list — one place the answer lives, and
+  the next view that reads an erasure by id inherits it.
+
+`tests/test_erasure_visibility.py` exercises a real **guest session** (a user
+row with `is_anonymous=True`, which passes `IsAuthenticated` — not
+`AnonymousUser`, which does not): a guest reads its own erasure, 404s on
+another user's id and on a platform-started one, and lists only its own. Five
+of its ten tests fail on 0.5.8.
+
+The sweep is a gate, not a grep: `test_every_gdpr_view_has_taken_a_position_on_guests`
+runs `stapel_core.adoption`'s check over this module's whole URL surface with
+the axis forced on, so the next undeclared view fails the suite instead of
+surfacing in somebody's production `manage.py check`.
+
+`docs/schema.json` moves for the two docstrings and the permission line, plus
+one `error_language` help-text string that comes from the current stapel-core.
+
 ## [0.5.8] — 2026-09-08
 
 ### Fixed — the refusals no view raises answer the fleet envelope
