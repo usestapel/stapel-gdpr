@@ -128,6 +128,16 @@ Configure in Django settings::
         # Where ``gdpr.dsar.opened`` goes. Empty means nobody is told a
         # request arrived, which is how a 30-day statutory clock is missed.
         "DSAR_STAFF_EMAILS": ["privacy@example.com"],
+        # Rolling hourly budget per caller on the three doors that start
+        # work or send mail on request: the public DSAR intake, account
+        # closure and the data-export request (``stapel_gdpr.throttling``).
+        # The intake is AllowAny by regulation and @captcha_protected is a
+        # no-op without a configured captcha backend, so without this the
+        # form is an unauthenticated mail trigger anyone can hold open.
+        # Keyed on the account when there is one, else on
+        # ``stapel_core.netintel.client_ip`` — never on a header the caller
+        # writes. ``0`` disables every budget here.
+        "INTAKE_RATE_LIMIT_PER_HOUR": 10,
 
         # -- Escape hatches (named, loud, off by default) -------------------
         # Mark a closure DELETED without a receipt from every declared
@@ -155,6 +165,7 @@ gdpr_settings = AppSettings(
         "ERASURE_AUTHORIZER": "",
         "SUBPROCESSORS": [],
         "DSAR_STAFF_EMAILS": [],
+        "INTAKE_RATE_LIMIT_PER_HOUR": 10,
         "REMOTE_DELETION_SERVICES": [],
         "SESSION_REVOKER": "",
         "PRIMARY_IDENTITY_ERASURE": "anonymize",

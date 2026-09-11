@@ -138,10 +138,17 @@ class DataExportRequestView(GDPRAPIView):
         responses={
             202: ExportRequestSerializer,
             409: StapelErrorSerializer,
+            429: StapelErrorSerializer,
         },
         tags=["GDPR"],
     )
     def post(self, request: Request):  # noqa: R007
+        from .throttling import SCOPE_DATA_EXPORT, refusal, spend
+
+        retry_after = spend(request, SCOPE_DATA_EXPORT)
+        if retry_after:
+            return refusal(retry_after)
+
         try:
             export_req = gdpr_orchestrator.request_export(request.user.pk)
         except ValueError as e:
@@ -462,11 +469,18 @@ class AccountCloseView(GDPRAPIView):
         responses={
             202: ClosureStatusSerializer,
             409: StapelErrorSerializer,
+            429: StapelErrorSerializer,
             503: StapelErrorSerializer,
         },
         tags=["GDPR"],
     )
     def post(self, request: Request):  # noqa: R007
+        from .throttling import SCOPE_ACCOUNT_CLOSE, refusal, spend
+
+        retry_after = spend(request, SCOPE_ACCOUNT_CLOSE)
+        if retry_after:
+            return refusal(retry_after)
+
         try:
             closure = gdpr_orchestrator.initiate_closure(request.user.pk)
         except SessionRevocationUnavailable as e:
@@ -963,8 +977,11 @@ class DsarView(GDPRAPIView):
     from a public /privacy form — the form is the channel a regulator
     expects to exist, and it cannot require a login. The anonymous variant
     goes through the core's tiered captcha policy
-    (``@captcha_protected``); an unconfigured captcha backend leaves the
-    form open exactly as before, which is a host's decision to make.
+    (``@captcha_protected``); an unconfigured captcha backend leaves that
+    decorator doing nothing, which is why the door also carries a rolling
+    hourly budget per caller (``stapel_gdpr.throttling``,
+    ``INTAKE_RATE_LIMIT_PER_HOUR``) — spent before anything is recorded or
+    mailed, so a refused knock leaves no row and sends no acknowledgement.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -1005,12 +1022,23 @@ class DsarView(GDPRAPIView):
         responses={
             201: DsarStatusSerializer,
             400: StapelErrorSerializer,
+            429: StapelErrorSerializer,
         },
         tags=["GDPR"],
     )
     @captcha_protected(action="gdpr_dsar")
     def post(self, request: Request):  # noqa: R007
         from .dsar import create_dsar
+        from .throttling import SCOPE_DSAR, refusal, spend
+
+        # Spent BEFORE anything is recorded or mailed: a refused knock must
+        # leave no row and send no acknowledgement, or the budget caps the
+        # answer and not the abuse. @captcha_protected above it is a no-op
+        # wherever no captcha backend is configured, which is why this is not
+        # a second belt on the same trousers.
+        retry_after = spend(request, SCOPE_DSAR)
+        if retry_after:
+            return refusal(retry_after)
 
         kind = str(request.data.get("kind", "")).strip()
         if kind not in {k for k, _ in DsarRequest.KIND_CHOICES}:

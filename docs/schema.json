@@ -8,7 +8,7 @@
     "/gdpr/api/v1/dsar": {
       "get": {
         "operationId": "gdpr_api_v1_dsar_list",
-        "description": "Intake and queue for data-subject requests.\n\n``POST`` takes both an authenticated app request and an anonymous one\nfrom a public /privacy form — the form is the channel a regulator\nexpects to exist, and it cannot require a login. The anonymous variant\ngoes through the core's tiered captcha policy\n(``@captcha_protected``); an unconfigured captcha backend leaves the\nform open exactly as before, which is a host's decision to make.\n\n**Permissions:** `AllowAny`",
+        "description": "Intake and queue for data-subject requests.\n\n``POST`` takes both an authenticated app request and an anonymous one\nfrom a public /privacy form — the form is the channel a regulator\nexpects to exist, and it cannot require a login. The anonymous variant\ngoes through the core's tiered captcha policy\n(``@captcha_protected``); an unconfigured captcha backend leaves that\ndecorator doing nothing, which is why the door also carries a rolling\nhourly budget per caller (``stapel_gdpr.throttling``,\n``INTAKE_RATE_LIMIT_PER_HOUR``) — spent before anything is recorded or\nmailed, so a refused knock leaves no row and sends no acknowledgement.\n\n**Permissions:** `AllowAny`",
         "summary": "List data-protection requests (staff)",
         "tags": [
           "GDPR"
@@ -128,6 +128,16 @@
             "description": ""
           },
           "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {
@@ -708,6 +718,16 @@
             },
             "description": ""
           },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
           "503": {
             "content": {
               "application/json": {
@@ -902,6 +922,16 @@
             "description": ""
           },
           "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": ""
+          },
+          "429": {
             "content": {
               "application/json": {
                 "schema": {

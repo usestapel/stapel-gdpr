@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.6.0] — 2026-09-11
+
+### Added — a budget on the three doors that start work or send mail on request
+
+Security audit 2026-09-11, L-6. `POST /gdpr/api/v1/dsar` is `AllowAny` and has
+to be: a public privacy form is the channel a regulator expects to find, and it
+cannot require a login. Its only stated protection was `@captcha_protected`,
+which is a **no-op when no captcha backend is configured** — the state of the
+deployments the audit looked at. The intake was therefore an unauthenticated
+mail trigger: anybody could make the instance send an acknowledgement to any
+address and grow `DsarRequest`, at request speed, for as long as they liked.
+
+`stapel_gdpr.throttling` is a rolling hourly budget per caller, spent BEFORE
+anything is recorded or mailed — a refused knock leaves no row and sends no
+acknowledgement — answering the fleet's `error.429.rate_limit` envelope with a
+retry-after. It covers three scopes, each with its own counter: the DSAR
+intake, `AccountCloseView` and `DataExportRequestView`.
+
+* **`INTAKE_RATE_LIMIT_PER_HOUR`, default 10.** `0` disables every budget here.
+* **Keyed on the account when there is one, else on
+  `stapel_core.netintel.client_ip`** — the deployment's own answer to "who is
+  calling", the same value its other IP-keyed controls use. Deliberately not
+  DRF's `ScopedRateThrottle`: that keys on the whole `X-Forwarded-For` unless
+  `NUM_PROXIES` is set, i.e. on a header the client writes first and can
+  rotate. A shared office NAT is one address and many people, which is why an
+  authenticated caller is budgeted per account instead.
+* **Fails open on a cache failure.** A statutory intake that an infrastructure
+  fault turns into a refusal is worse than the abuse this caps.
+* `429` is declared on all three operations, so `docs/schema.json` moves and
+  the react pair regenerates.
+
+Minor rather than patch: a request that used to be answered can now be
+refused, and a deployment that wants the old behaviour says
+`INTAKE_RATE_LIMIT_PER_HOUR: 0`.
+
 ## [0.5.10] — 2026-09-10
 
 ### Fixed — every view a guest passes now says so, and the sweep asks the gate instead of reading it
