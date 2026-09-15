@@ -128,6 +128,16 @@ ours to delete), and `DataExportPart.bucket_path` is cleared with it.
 
 ### What to do about archives already written under the old default
 
+**On the two fleets this library's authors run, nothing was exposed.** Both
+stands were checked before anything else shipped: neither media volume has a
+`gdpr/` directory, both have zero `DataExportRequest` rows, and thirty days of
+nginx logs show zero requests to `/media/gdpr` on either. The defect was real
+in the default and never reached data — there was nothing to disclose and
+nothing to purge. That is why the steps below are stated as precautions and
+not as an incident response: they are for anyone else running the library, who
+has to establish the same three facts for themselves before concluding the
+same thing. A deployment that cannot check its logs has not checked them.
+
 On every deployment that ran 0.6.0 or earlier with the default roots:
 
 1. **Before upgrading**, decide the root: set `STAPEL_GDPR["EXPORT_ROOT"]` to a
