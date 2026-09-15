@@ -28,6 +28,7 @@ from django.core.checks import Error, Warning as CheckWarning
 
 from stapel_gdpr import export_store
 from stapel_gdpr.checks import check_export_storage
+from stapel_gdpr.export_store import PrivateFileSystemStorage
 from stapel_gdpr.models import DataExportPart, DataExportRequest
 from stapel_gdpr.orchestrator import gdpr_orchestrator
 from tests.support import gdpr_conf
@@ -284,6 +285,71 @@ class TestPeerPartsDoNotLinger:
         )
         ids = [f.id for f in check_export_storage()]
         assert ids == ["gdpr.W014"]
+
+
+@pytest.mark.django_db
+class TestServeAndDeleteOnANonFilesystemStore:
+    """The download destroys the archive as it serves it.
+
+    On a filesystem that is free: POSIX keeps the inode alive for the open
+    handle, so the response streams out of a file that no longer has a name.
+    An object store has no such guarantee — ``delete()`` there is a DELETE on
+    the key, and a lazily-read body after it is a 404 handed to the subject
+    instead of their data. The bytes are spooled locally first.
+    """
+
+    def test_the_body_survives_the_delete(self, settings, tmp_path):
+        import io
+        import zipfile
+
+        from django.core.files.base import ContentFile
+
+        class LazyObjectStore(PrivateFileSystemStorage):
+            """A store whose handles go dead the moment the key is deleted."""
+
+            def open(self, name, mode="rb"):
+                payload = super().open(name, mode).read()
+                deleted = self._deleted
+
+                class LazyBody(io.BytesIO):
+                    def read(self, *args, **kwargs):
+                        if name in deleted:
+                            raise OSError("NoSuchKey")
+                        return super().read(*args, **kwargs)
+
+                return LazyBody(payload)
+
+            @property
+            def _deleted(self):
+                if not hasattr(self, "_deleted_keys"):
+                    self._deleted_keys = set()
+                return self._deleted_keys
+
+            def delete(self, name):
+                self._deleted.add(name)
+                super().delete(name)
+
+        settings.STORAGES = {
+            **settings.STORAGES,
+            export_store.EXPORT_STORAGE_ALIAS: {
+                "BACKEND": f"{LazyObjectStore.__module__}.{LazyObjectStore.__qualname__}",
+                "OPTIONS": {"location": str(tmp_path / "objects")},
+            },
+        }
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("README.txt", "hello")
+        key = export_store.export_storage().save(
+            "exports/cid/export_1.zip", ContentFile(buf.getvalue()),
+        )
+
+        handle = export_store.open_archive_for_last_read(key)
+        export_store.delete_archive(key)
+
+        body = handle.read()
+        assert body.startswith(b"PK")
+        assert not export_store.stored_archive_exists(key)
 
 
 class TestLegacyAbsolutePathsStillResolve:

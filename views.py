@@ -326,7 +326,7 @@ class DataExportDownloadView(GDPRAPIView):
         # POSIX keeps the inode alive for this handle, and an object store
         # serves the already-open body — so the response still streams while
         # the archive stops existing for everyone else.
-        handle = export_store.open_archive(stored)
+        handle = export_store.open_archive_for_last_read(stored)
         export_store.delete_archive(stored)
         DataExportRequest.objects.filter(pk=export_req.pk).update(archive_path=None)
 

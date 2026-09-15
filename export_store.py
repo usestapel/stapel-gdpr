@@ -89,6 +89,7 @@ __all__ = [
     "export_storage",
     "export_storage_is_shared",
     "open_archive",
+    "open_archive_for_last_read",
     "secure_mkdir",
     "staging_root",
     "stored_archive_exists",
@@ -262,6 +263,35 @@ def open_archive(stored: str):
     if _is_legacy_path(stored):
         return open(stored, "rb")
     return export_storage().open(stored, "rb")
+
+
+def open_archive_for_last_read(stored: str):
+    """Open the archive on the way to deleting it, safe to stream afterwards.
+
+    The download serves the archive and destroys it in the same breath, which
+    is only free on a filesystem: POSIX keeps the inode alive for an open
+    handle, so the response streams out of a file that no longer has a name.
+    An object store has no such guarantee — ``delete()`` there is a DELETE on
+    the key, and a lazy body read after it is a 404 handed to the subject
+    instead of their data. So a non-filesystem store's bytes are pulled into a
+    local spool first (a real temp file above 8 MiB, freed when the response
+    closes the handle), and only then is the object deleted.
+    """
+    if _is_legacy_path(stored):
+        return open(stored, "rb")
+    storage = export_storage()
+    if isinstance(storage, FileSystemStorage):
+        return storage.open(stored, "rb")
+
+    spool = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, suffix=".zip")
+    with storage.open(stored, "rb") as src:
+        while True:
+            chunk = src.read(1024 * 1024)
+            if not chunk:
+                break
+            spool.write(chunk)
+    spool.seek(0)
+    return spool
 
 
 def delete_archive(stored: Optional[str]) -> bool:

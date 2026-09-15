@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.2] — 2026-09-16
+
+### Fixed — serve-then-delete is only free on a filesystem
+
+Patch, on the object-store shape 0.7.0 introduced. The download serves the
+archive and destroys it in the same breath. On a filesystem that costs
+nothing: POSIX keeps the inode alive for the open handle, so the response
+streams out of a file that no longer has a name. An object store has no such
+guarantee — `delete()` there is a DELETE on the key, and a body read lazily
+after it is a `NoSuchKey` handed to the subject instead of their data.
+
+`export_store.open_archive_for_last_read` is the handle the download view
+takes now: a plain open on a filesystem store (unchanged behaviour), and on
+any other store the bytes are pulled into a local spool — in memory below
+8 MiB, a temp file above it, freed when the response closes the handle —
+*before* the object is deleted. Deployments on the default filesystem store
+are unaffected; the ones this fixes are exactly the ones CONFIG.MD tells to
+configure `STORAGES["stapel_gdpr_exports"]` when their web and worker
+processes do not share a filesystem.
+
+Covered by a test whose store hands out handles that go dead the moment the
+key is deleted, which is what the real backend does and what a
+`FileSystemStorage`-only suite can never notice.
+
 ## [0.7.1] — 2026-09-16
 
 ### Fixed — the database-contract test, against Django 6.1's new `run_checks` semantics
