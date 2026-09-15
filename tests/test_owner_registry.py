@@ -268,7 +268,7 @@ class TestReregistrationCheckDatabaseContract:
 
     ``django.core.checks.registry.run_checks`` calls every check with
     ``databases=`` — the aliases the caller opted into (``manage.py check
-    --database default``, or ``migrate``). ``None`` means "touch no
+    --database default``, or ``migrate``). No alias means "touch no
     database", and that is exactly what a boot smoke test running without
     one passes. ``django.core.checks.database.check_database_backends`` is
     the canonical shape of the contract.
@@ -277,16 +277,33 @@ class TestReregistrationCheckDatabaseContract:
     ``DatabaseError``, so a deployment with no database did not get a
     finding — it got an ``ImproperlyConfigured`` traceback out of
     ``manage.py check``.
+
+    Django 6.1 moved what ``databases=None`` means AT THE REGISTRY, not what
+    it means to a check: ``run_checks`` now expands ``None`` to
+    ``list(connections)`` for a tagged run, and drops database-tagged checks
+    entirely for an untagged one. So "offered none" is spelled ``[]`` here —
+    the value that has meant exactly that in every version — and the
+    library-side contract is asserted against every gdpr check rather than
+    only the one that first broke it.
     """
 
     def test_no_databases_offered_means_no_query(self, query_is_forbidden):
         assert check_reregistration_hashes() == []
 
-    def test_the_registry_runs_it_without_a_database(self, query_is_forbidden):
-        """The path `manage.py check` takes: every check, ``databases=None``."""
+    def test_no_gdpr_check_queries_when_offered_no_alias(self, query_is_forbidden):
+        """Every check this module registers, not just the one from 0.4.1."""
         from django.core.checks.registry import registry
 
-        findings = registry.run_checks(tags=["gdpr"], databases=None)
+        gdpr_checks = [c for c in registry.get_checks() if "gdpr" in c.tags]
+        assert gdpr_checks  # the registry really did have something to run
+        for check in gdpr_checks:
+            assert check(app_configs=None, databases=None) is not None
+
+    def test_the_registry_runs_it_without_a_database(self, query_is_forbidden):
+        """The path `manage.py check` takes when no ``--database`` is named."""
+        from django.core.checks.registry import registry
+
+        findings = registry.run_checks(tags=["gdpr"], databases=[])
         assert not [f for f in findings if f.id == "gdpr.E004"]
 
     @pytest.mark.django_db

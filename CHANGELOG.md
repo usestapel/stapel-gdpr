@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.1] — 2026-09-16
+
+### Fixed — the database-contract test, against Django 6.1's new `run_checks` semantics
+
+Test-only; no library behaviour changes. `v0.7.0` was tagged but **never
+published**: CI was red on Python 3.13/3.14 (both of which resolve Django
+6.1.1) for a reason that predates it, and the publish workflow's `ci-gate`
+correctly refused to ship over a red CI run.
+
+Django 6.1 changed what `databases=None` means **at the registry**, not what it
+means to a check. `CheckRegistry.run_checks` now expands `None` to
+`list(connections)` for a tagged run, and drops `database`-tagged checks
+entirely for an untagged one. `tests/test_owner_registry.py` asserted the old
+registry semantics by passing `databases=None` with `tags=["gdpr"]`, so on
+Django 6.1 the checks were legitimately handed every alias and queried.
+
+The library's contract — *a check queries only the aliases it was handed* — is
+unchanged and untouched; `_db_query`'s guard was always correct. "Offered none"
+is now spelled `databases=[]`, the value that has meant exactly that in every
+Django version, and the contract is asserted against **every** gdpr-tagged
+check rather than only `check_reregistration_hashes`, which is how the same
+class of regression would be caught in `check_dsar_deadlines` or
+`check_data_owner_liveness` next time.
+
 ## [0.7.0] — 2026-09-16
 
 ### Fixed — a personal-data export no longer defaults into a root the web server serves
