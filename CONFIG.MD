@@ -41,8 +41,9 @@ a working default.
 | DOWNLOAD_TTL_HOURS | env | Lifetime of the single-use export download token; the archive is deleted on consume or expiry. | no | `24` |
 | DOWNLOAD_URL_TEMPLATE | env | Where the export-ready notification points. Keep the token in the URL **fragment** — a query string lands in access logs, browser history and `Referer`. | no | `"{frontend_url}/privacy/export/#token={token}"` |
 | EXPORT_BUCKET_PREFIX | env | Prefix a peer service's `bucket_path` must start with before this service opens the object and copies its bytes into a user's download; templated over the export's own correlation id. `""` accepts any key (`gdpr.W007`); traversal, absolute and URL-shaped keys are refused either way. | no | `"gdpr/{correlation_id}/"` |
-| STAGING_ROOT | env | Filesystem root for per-request export staging directories. | no | `""` (→ `MEDIA_ROOT/gdpr/staging`) |
-| ARCHIVE_ROOT | env | Filesystem root for final export ZIP archives. | no | `""` (→ `MEDIA_ROOT/gdpr/exports`) |
+| EXPORT_ROOT | env | **Private root for personal-data exports — never a served root.** Holds the per-request staging directories and the finished ZIPs. A value inside `MEDIA_ROOT`, `STATIC_ROOT` or `STATICFILES_DIRS` is refused at boot (`gdpr.E013`); leaving it unset is `gdpr.W013`, because the default is local to whichever process wrote it. See "Where an export lives" below. | no | `""` (→ `BASE_DIR/private/gdpr`, or `<tmpdir>/stapel-gdpr` with no `BASE_DIR`) |
+| STAGING_ROOT | env | Per-directory override of `EXPORT_ROOT` for staging. Checked by `gdpr.E013` too. | no | `""` (→ `EXPORT_ROOT/staging`) |
+| ARCHIVE_ROOT | env | Per-directory override of `EXPORT_ROOT` for the finished ZIPs. Checked by `gdpr.E013` too. | no | `""` (→ `EXPORT_ROOT/exports`) |
 | REREG_SALT | env | Key for the purpose-bound re-registration HMAC. Set it once, before any hashes exist — changing it silently invalidates every stored hash. | no | `""` (falls back to `SECRET_KEY`) |
 | REMOTE_DELETION_SERVICES | env | Legacy pre-registry list of services that must confirm erasure; folded into `DATA_OWNERS` as `kind='remote'` entries claiming `account`. | no | `[]` |
 | ALLOW_ERASURE_WITHOUT_RECEIPTS | env | Escape hatch: mark an erasure `deleted` without a full set of receipts, recorded as `completeness_waived` and warned about by `gdpr.W003`. Turns a proven erasure back into a hopeful one. | no | `False` |
@@ -59,6 +60,87 @@ and the rest predate the namespace.
 |-----|--------|---------|----------|---------|
 | GDPR_PROVIDERS | env | **The dotted-path seam.** List of `GDPRProvider` class paths (e.g. `'stapel_auth.gdpr.AuthGDPRProvider'`) loaded with `import_string` in `apps.ready()` and registered into `stapel_core.gdpr.gdpr_registry` — no compile-time dependency on any service package. Every registered section must also appear in `DATA_OWNERS`, or the inventory is stale (`gdpr.E002`). | no | `[]` |
 | GDPR_COLLECTING_SERVICES | env | Microservices mode: explicit list of services expected to contribute export parts. Unioned with `DATA_OWNERS` and the in-process registry — an owner that is not asked cannot be reported missing. | no | `[]` |
+| GDPR_EXPORT_ROOT | env | Flat equivalent of `EXPORT_ROOT`. | no | `""` |
 | GDPR_STAGING_ROOT | env | Legacy flat equivalent of `STAGING_ROOT`. | no | `""` |
 | GDPR_ARCHIVE_ROOT | env | Legacy flat equivalent of `ARCHIVE_ROOT`. | no | `""` |
 | FRONTEND_URL | env | Base of the download URL in the export-ready notification (`DOWNLOAD_URL_TEMPLATE`). | no | `""` |
+| STORAGES["stapel_gdpr_exports"] | env | Django storage alias for the export store. Configure it when the celery worker and the web process do not share a filesystem; otherwise the module uses a private `FileSystemStorage` rooted at `EXPORT_ROOT`. See below. | no | unset |
+
+## Where an export lives
+
+A data export is a ZIP holding *everything the system knows about a person*.
+Until 0.7.0 it defaulted to `MEDIA_ROOT/gdpr/exports`, and the ordinary
+Django/nginx shape serves `MEDIA_ROOT` as static files:
+
+```nginx
+location /media { alias /media; add_header Cache-Control "public, max-age=2592000"; }
+```
+
+So on a deployment that followed the ordinary shape — one that read nothing
+and configured nothing — that archive sat at a guessable URL, served without
+authentication and cacheable by every intermediary between the origin and the
+reader. The library's own default was the whole vulnerability, which is why
+the rules below are mechanisms rather than advice.
+
+**1. The root is explicit and off every served root.** `EXPORT_ROOT` is its
+own setting; it is not derived from `MEDIA_ROOT` and never falls back to it.
+The default (`BASE_DIR/private/gdpr`) is a literal shape no ordinary
+`location /media` or `location /static` block can reach. A deployment that
+points `EXPORT_ROOT`, `STAGING_ROOT`, `ARCHIVE_ROOT` — or their flat
+`GDPR_*` twins — inside `MEDIA_ROOT`, `STATIC_ROOT` or `STATICFILES_DIRS` is
+refused at boot with **`gdpr.E013`**, an `Error` in the same spirit as
+`stapel_core.storage.E001`. It is not a warning on purpose: a deployment
+publishing personal-data archives is not degraded, and a warning is exactly
+what let the old default run.
+
+**2. The download is never a path and never a URL.** The archive is streamed
+by `POST /gdpr/api/v1/user/data-export/download`, which authenticates the
+subject, spends a single-use token carried in the request *body*, deletes the
+object as it serves and answers `Cache-Control: no-store, private`. The store
+the module writes through (`stapel_gdpr.export_store.PrivateFileSystemStorage`)
+**raises on `url()`** — there is no address to guess and none to leak. Note
+that plain `FileSystemStorage(base_url=None)` is *not* private: `base_url`
+falls back to `settings.MEDIA_URL`, so the obvious way to build a private
+store still hands out `/media/<key>`.
+
+**3. The row stores a store key, not a filesystem path.**
+`DataExportRequest.archive_path` holds a key inside the export store. The
+download view runs in a different process from the celery task that writes
+the archive; an absolute path written in the worker's container resolves to
+nothing in the web container, which is how a correctly-generated export
+answered a 500 to someone exercising data portability after being told it was
+READY. When the two processes do not share a filesystem, give them a shared
+store:
+
+```python
+STORAGES = {
+    ...,
+    "stapel_gdpr_exports": {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {"bucket_name": "acme-private", "location": "gdpr",
+                    "default_acl": "private", "querystring_auth": True},
+    },
+}
+```
+
+Anything else — a shared volume named in `EXPORT_ROOT`, a GCS backend — works
+the same way: both processes resolve the same key.
+
+**Signed object-storage URLs: no.** The library never hands one to a subject.
+A signed URL is a bearer credential to the complete dump: it cannot be made
+single-use, it cannot be revoked once issued, and it lands in browser history,
+`Referer` and proxy logs — the leak paths the body-carried token exists to
+avoid. If a deployment must use one anyway (archives too large to stream
+through the app), keep the signature lifetime at **60 seconds or less** — it
+covers the gap between the click and the first byte, not the gap between the
+email and the click — and treat the download endpoint, not the URL, as the
+thing that authenticates.
+
+**Peer-uploaded slices.** In microservices mode a remote data owner writes its
+slice to `default_storage` under `EXPORT_BUCKET_PREFIX`
+(`gdpr/{correlation_id}/`). Since 0.7.0 each slice is deleted as soon as its
+bytes are inside the archive. When `default_storage` is a filesystem store
+inside a served root and at least one remote owner is declared, **`gdpr.W014`**
+says so at boot: the window is minutes rather than forever, but it exists.
+Give `default_storage` a private backend, or serve `MEDIA_ROOT` through an
+authenticated handler.

@@ -36,6 +36,20 @@ for that sentence to appear.
   it (or does not list at all). That subject's erasures never reach the
   store, while the same store answers for the subjects the host did list —
   which is what makes the gap invisible.
+* ``gdpr.E013`` — the export root is inside a root the web server serves
+  (MEDIA_ROOT, STATIC_ROOT, STATICFILES_DIRS). A zip holding everything the
+  system knows about a person would be fetchable without authentication and
+  cacheable by intermediaries. An **Error**, not a warning, in the spirit of
+  ``stapel_core.storage.E001``: this is not a degraded deployment, it is a
+  publishing one, and a warning is exactly what let the shipped default run.
+* ``gdpr.W013`` — no export root and no export store were named, so the
+  archive lives on whichever filesystem the celery worker happens to have.
+  With a separate web container the subject is told the export is READY and
+  the download answers 500.
+* ``gdpr.W014`` — a remote data owner is declared and ``default_storage`` is
+  a filesystem store inside a served root, so the slices peers upload land
+  there too. They are deleted the moment the archive is assembled, which
+  bounds the window rather than closing it.
 
 E009/E010/W011/W012 are the 2026-09-07 fleet incident, found only by an
 external audit: a host listing ``"profiles"``/``"cdn"`` (the app labels;
@@ -45,7 +59,9 @@ every request still ended. See :mod:`stapel_gdpr.declarations`.
 """
 from __future__ import annotations
 
+import os
 from datetime import timedelta
+from pathlib import Path
 
 from django.core.checks import Error, Warning as CheckWarning, register
 
@@ -62,6 +78,7 @@ __all__ = [
     "check_data_owner_registry",
     "check_dsar_deadlines",
     "check_data_owner_liveness",
+    "check_export_storage",
     "check_reregistration_hashes",
     "register_checks",
 ]
@@ -553,10 +570,171 @@ def check_dsar_deadlines(app_configs=None, databases=None, **kwargs):
     ]
 
 
+# =============================================================================
+# Export storage — gdpr.E013 / gdpr.W013 / gdpr.W014
+# =============================================================================
+
+
+def _served_roots() -> list[tuple[str, Path]]:
+    """Roots an ordinary static/media location block hands to the internet."""
+    from django.conf import settings
+
+    roots: list[tuple[str, Path]] = []
+    for name in ("MEDIA_ROOT", "STATIC_ROOT"):
+        value = getattr(settings, name, None)
+        if value:
+            roots.append((name, Path(os.fspath(value))))
+    for index, entry in enumerate(getattr(settings, "STATICFILES_DIRS", None) or []):
+        # An entry may be a (prefix, path) pair.
+        path = entry[1] if isinstance(entry, (tuple, list)) and len(entry) == 2 else entry
+        if path:
+            roots.append((f"STATICFILES_DIRS[{index}]", Path(os.fspath(path))))
+    return roots
+
+
+def _resolve(path: Path) -> Path:
+    """Absolute, symlink-free where possible — the shape nginx would alias."""
+    try:
+        return path.resolve()
+    except OSError:  # pragma: no cover - unreadable parent
+        return Path(os.path.abspath(path))
+
+
+def _is_inside(path: Path, parent: Path) -> bool:
+    resolved, root = _resolve(path), _resolve(parent)
+    return resolved == root or resolved.is_relative_to(root)
+
+
+def _default_storage_is_served() -> str:
+    """Name of the served root ``default_storage`` writes into, or ""."""
+    from django.core.files.storage import FileSystemStorage, default_storage
+
+    if not isinstance(default_storage, FileSystemStorage):
+        return ""
+    try:
+        location = Path(default_storage.location)
+    except Exception:  # pragma: no cover - exotic backend
+        return ""
+    for name, root in _served_roots():
+        if _is_inside(location, root):
+            return name
+    return ""
+
+
+def check_export_storage(app_configs=None, **kwargs):
+    """``gdpr.E013`` / ``gdpr.W013`` / ``gdpr.W014`` — where an export lands.
+
+    Until 0.7.0 the roots defaulted to ``MEDIA_ROOT/gdpr/``, and the ordinary
+    Django/nginx shape serves MEDIA_ROOT as static files. A complete
+    personal-data archive therefore sat at a guessable URL, unauthenticated
+    and cacheable by every intermediary — the library's own default was the
+    vulnerability, so the deployment that reads nothing is the one this has
+    to protect. The default moved off every served root; this refuses the
+    deployments that would put it back.
+    """
+
+    from . import export_store
+    from .owners import data_owner_report
+
+    problems = []
+    candidates = [
+        ("the export root", export_store.export_root()),
+        ("the archive root", export_store.archive_root()),
+        ("the staging root", export_store.staging_root()),
+    ]
+    # One finding per cause. The archive and staging roots derive from the
+    # export root, so a served EXPORT_ROOT must not be reported three times:
+    # a root already named covers everything underneath it.
+    reported: list[Path] = []
+    for label, root in candidates:
+        if any(_is_inside(root, named) for named in reported):
+            continue
+        for served_name, served in _served_roots():
+            if not _is_inside(root, served):
+                continue
+            reported.append(root)
+            problems.append(
+                Error(
+                    f"{label} for personal-data exports ({root}) is inside "
+                    f"{served_name} ({served}).",
+                    hint=(
+                        "The ordinary Django/nginx shape serves that root as "
+                        "static files (location /media { alias ...; }, often "
+                        "with Cache-Control: public), so a ZIP holding "
+                        "everything this system knows about a person would be "
+                        "downloadable without authentication and cacheable by "
+                        "every proxy in between. Point "
+                        'STAPEL_GDPR["EXPORT_ROOT"] at a directory no static '
+                        "or media location block can reach, or configure "
+                        f'settings.STORAGES["{export_store.EXPORT_STORAGE_ALIAS}"] '
+                        "with a private object store. The archive is streamed "
+                        "through the authenticated download endpoint; it "
+                        "never needs a URL."
+                    ),
+                    id="gdpr.E013",
+                )
+            )
+            break  # one finding per root; the first served parent names it
+
+    if problems:
+        return problems  # E013 already says the louder thing about this root.
+
+    if not export_store.export_root_is_explicit() and not export_store.export_storage_is_shared():
+        problems.append(
+            CheckWarning(
+                "No export root or export store is configured, so archives go "
+                f"to {export_store.export_root()} — a path local to whichever "
+                "process wrote it.",
+                hint=(
+                    "Fine for a monolith. When the celery worker and the web "
+                    "process are separate containers, the worker writes the "
+                    "ZIP, the subject is told the export is READY, and the "
+                    "download answers 500 with 'archive missing' — data "
+                    "portability that silently does not work. Name a shared "
+                    'volume in STAPEL_GDPR["EXPORT_ROOT"], or point '
+                    f'settings.STORAGES["{export_store.EXPORT_STORAGE_ALIAS}"] '
+                    "at an object store both processes can read. Either way, "
+                    "keep it off MEDIA_ROOT."
+                ),
+                id="gdpr.W013",
+            )
+        )
+
+    served_name = _default_storage_is_served()
+    if served_name:
+        remote_owners = sorted(
+            owner.name
+            for owner in data_owner_report().owners
+            if getattr(owner, "kind", "") == "remote"
+        )
+        if remote_owners:
+            problems.append(
+                CheckWarning(
+                    "Remote data owners (" + ", ".join(remote_owners) + ") upload "
+                    "their slice of a subject's export to default_storage, which "
+                    f"is a filesystem store inside {served_name}.",
+                    hint=(
+                        "Those slices are personal data at a URL nothing "
+                        "authenticates. stapel-gdpr deletes each one as soon as "
+                        "it is folded into the archive, so the window is minutes "
+                        "rather than forever — but the window exists. Give "
+                        "default_storage a private backend, or serve MEDIA_ROOT "
+                        "through an authenticated handler. "
+                        'STAPEL_GDPR["EXPORT_BUCKET_PREFIX"] already confines '
+                        "peers to their own export's keys."
+                    ),
+                    id="gdpr.W014",
+                )
+            )
+
+    return problems
+
+
 def register_checks() -> None:
     """Called from ``AppConfig.ready``; idempotent."""
     register(check_data_owner_registry, "gdpr")
     register(check_data_owner_names, "gdpr")
+    register(check_export_storage, "gdpr")
     register(check_reregistration_hashes, "gdpr", "database")
     register(check_data_owner_liveness, "gdpr", "database")
     register(check_dsar_deadlines, "gdpr", "database")

@@ -8,8 +8,14 @@ import pytest
 from django.conf import settings
 from django.utils import timezone
 
+from stapel_gdpr import export_store
 from stapel_gdpr.models import DataExportPart, DataExportRequest
 from stapel_gdpr.orchestrator import gdpr_orchestrator
+
+
+def _archive_mtime(req) -> int:
+    """Mtime of the stored archive, addressed by store key."""
+    return Path(export_store.export_storage().path(req.archive_path)).stat().st_mtime_ns
 
 
 @pytest.mark.django_db
@@ -40,10 +46,12 @@ class TestExportPipeline:
         assert req.download_expires_at > timezone.now() + timedelta(hours=23)
         assert req.download_expires_at < timezone.now() + timedelta(hours=25)
 
-        # archive lands under MEDIA_ROOT/gdpr/exports with the provider data
-        archive = Path(req.archive_path)
-        assert archive.exists()
-        assert str(archive).startswith(str(Path(settings.MEDIA_ROOT) / "gdpr" / "exports"))
+        # The archive lands in the private export store (never MEDIA_ROOT —
+        # see tests/test_export_storage.py) with the provider data, and the
+        # row holds a store KEY rather than an absolute path.
+        assert export_store.stored_archive_exists(req.archive_path)
+        archive = Path(export_store.export_storage().path(req.archive_path))
+        assert not str(archive).startswith(str(Path(settings.MEDIA_ROOT)))
         with zipfile.ZipFile(archive) as zf:
             names = zf.namelist()
             data_file = next(n for n in names if n.endswith("fake/fake.json"))
@@ -105,7 +113,7 @@ class TestRemotePartsAndSweep:
 
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_READY
-        with zipfile.ZipFile(req.archive_path) as zf:
+        with export_store.open_archive(req.archive_path) as fh, zipfile.ZipFile(fh) as zf:
             readme = next(n for n in zf.namelist() if n.endswith("README.txt"))
             text = zf.read(readme).decode()
             assert "PARTIAL export" in text
@@ -119,7 +127,7 @@ class TestAssemblyRace:
         gdpr_orchestrator.run_export(req.pk)
         req.refresh_from_db()
         token_before = req.download_token_hash
-        mtime_before = Path(req.archive_path).stat().st_mtime_ns
+        mtime_before = _archive_mtime(req)
 
         # a late duplicate completion must be a no-op
         gdpr_orchestrator._try_assemble(req, gdpr_orchestrator._staging_dir(req.pk))
@@ -127,7 +135,7 @@ class TestAssemblyRace:
 
         req.refresh_from_db()
         assert req.download_token_hash == token_before
-        assert Path(req.archive_path).stat().st_mtime_ns == mtime_before
+        assert _archive_mtime(req) == mtime_before
 
     def test_assembling_status_blocks_second_builder(self, settings, user):
         settings.GDPR_COLLECTING_SERVICES = ["auth"]

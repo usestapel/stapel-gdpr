@@ -12,8 +12,14 @@ from stapel_gdpr.models import (
     DataExportPart,
     DataExportRequest,
 )
+from stapel_gdpr import export_store
 from stapel_gdpr.orchestrator import gdpr_orchestrator
 from tests.support import gdpr_conf
+
+
+def _archive_mtime(req) -> int:
+    """Mtime of the stored archive, addressed by store key."""
+    return Path(export_store.export_storage().path(req.archive_path)).stat().st_mtime_ns
 
 
 @pytest.mark.django_db
@@ -56,9 +62,12 @@ class TestMicroservicesExportPath:
         assert req.status == DataExportRequest.STATUS_READY
         part = req.parts.get(service="auth")
         assert part.status == DataExportPart.STATUS_DONE
-        assert part.bucket_path == bucket_path
+        # The peer's object is deleted the moment its bytes are in the
+        # archive, and the row stops naming a key that no longer exists
+        # (tests/test_export_storage.py::TestPeerPartsDoNotLinger).
+        assert part.bucket_path is None
 
-        with zipfile.ZipFile(req.archive_path) as zf:
+        with export_store.open_archive(req.archive_path) as fh, zipfile.ZipFile(fh) as zf:
             name = next(n for n in zf.namelist() if n.endswith("auth/export.json"))
             assert json.loads(zf.read(name)) == payload
 
@@ -98,13 +107,13 @@ class TestRunExportBranches:
         req = gdpr_orchestrator.request_export(user.pk)
         gdpr_orchestrator.run_export(req.pk)
         req.refresh_from_db()
-        mtime = Path(req.archive_path).stat().st_mtime_ns
+        mtime = _archive_mtime(req)
 
         gdpr_orchestrator.run_export(req.pk)  # early return
 
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_READY
-        assert Path(req.archive_path).stat().st_mtime_ns == mtime
+        assert _archive_mtime(req) == mtime
 
     def test_run_export_skips_providers_without_part_or_done(
         self, settings, user, fake_provider
@@ -325,7 +334,7 @@ class TestSweepPartialAssemble:
 
         req.refresh_from_db()
         assert req.status == DataExportRequest.STATUS_READY
-        with zipfile.ZipFile(req.archive_path) as zf:
+        with export_store.open_archive(req.archive_path) as fh, zipfile.ZipFile(fh) as zf:
             readme = zf.read(
                 next(n for n in zf.namelist() if n.endswith("README.txt"))
             ).decode()

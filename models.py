@@ -41,6 +41,12 @@ class DataExportRequest(models.Model):
     correlation_id      = models.CharField(max_length=36, unique=True, null=True, blank=True, db_index=True)
     # Immutable list of services expected to contribute (snapshot at request time)
     expected_services   = models.JSONField(default=list)
+    # KEY of the archive inside the export store (stapel_gdpr.export_store) —
+    # NOT a filesystem path. Before 0.7.0 this held an absolute path, which
+    # only resolved inside the celery container that wrote it: the subject was
+    # told the export was READY and the download answered 500. Rows carrying
+    # the old absolute form are still served (export_store treats an absolute
+    # value as legacy), so the column is unchanged and no migration is needed.
     archive_path        = models.CharField(max_length=500, null=True, blank=True)
     # Plaintext token column of the pre-hardening format. Nulled by migration
     # 0003 and never written again; the contract-phase removal ships in the

@@ -1,5 +1,4 @@
 import logging
-import os
 
 from django.http import FileResponse
 from django.utils import timezone
@@ -28,6 +27,7 @@ from stapel_core.django.api.permissions import (
 from stapel_core.django.captcha import captcha_protected
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
+from . import export_store
 from .closure_token import (
     CLOSURE_TOKEN_HEADER,
     ClosureTokenExpired,
@@ -302,12 +302,18 @@ class DataExportDownloadView(GDPRAPIView):
             expire_export(export_req)
             return StapelErrorResponse(410, ERR_410_DOWNLOAD_EXPIRED)
 
-        archive_path = export_req.archive_path
-        if not archive_path or not os.path.exists(archive_path):
+        # The archive is addressed by a store KEY, not by a filesystem path:
+        # this process is not the celery worker that wrote it, and a path
+        # written in another container resolves to nothing here (which is
+        # what made a correctly-generated export answer 500). A deployment
+        # whose processes do not share a filesystem points
+        # ``STORAGES["stapel_gdpr_exports"]`` at a store both can read.
+        stored = export_req.archive_path
+        if not export_store.stored_archive_exists(stored):
             logger.error(
-                "GDPR archive file missing: request=%s path=%s",
+                "GDPR archive missing from the export store: request=%s key=%s",
                 export_req.pk,
-                archive_path,
+                stored,
             )
             return error_500_internal()
 
@@ -316,15 +322,12 @@ class DataExportDownloadView(GDPRAPIView):
         if not export_req.consume_download_token(token):
             return StapelErrorResponse(410, ERR_410_DOWNLOAD_CONSUMED)
 
-        # The file is opened before it is unlinked: POSIX keeps the inode
-        # alive for this handle, so the response still streams while the
-        # archive stops existing for everyone else.
-        handle = open(archive_path, "rb")
-        try:
-            os.remove(archive_path)
-        except OSError as e:  # pragma: no cover - filesystem-dependent
-            logger.error("GDPR archive removal failed: request=%s path=%s err=%s",
-                         export_req.pk, archive_path, e)
+        # The object is opened before it is deleted: on a filesystem store
+        # POSIX keeps the inode alive for this handle, and an object store
+        # serves the already-open body — so the response still streams while
+        # the archive stops existing for everyone else.
+        handle = export_store.open_archive(stored)
+        export_store.delete_archive(stored)
         DataExportRequest.objects.filter(pk=export_req.pk).update(archive_path=None)
 
         response = FileResponse(

@@ -7,7 +7,6 @@ Microservices:   orchestrator publishes bus events; each service handles its own
                  The orchestrator assembles the final archive by downloading from storage.
 """
 import logging
-import os
 import shutil
 import uuid as uuid_lib
 import zipfile
@@ -24,7 +23,7 @@ from stapel_core.gdpr import (
     gdpr_registry,
 )
 
-from . import lifecycle
+from . import export_store, lifecycle
 from .conf import gdpr_settings
 from .models import (
     AccountClosureRequest,
@@ -94,11 +93,9 @@ def is_safe_bucket_path(bucket_path: str, correlation_id: str) -> bool:
     return not prefix or bucket_path.startswith(prefix)
 
 
-def _secure_mkdir(path: Path) -> Path:
-    """mkdir -p with owner-only permissions (0700)."""
-    path.mkdir(parents=True, exist_ok=True)
-    os.chmod(path, 0o700)
-    return path
+#: mkdir -p with owner-only permissions (0700). Lives in
+#: :mod:`stapel_gdpr.export_store` now, next to the roots it creates.
+_secure_mkdir = export_store.secure_mkdir
 
 
 def _collecting_services() -> list[str]:
@@ -283,7 +280,7 @@ class GDPROrchestrator:
             raise
 
     def _assemble_zip(self, req: DataExportRequest, staging_dir: Path, partial: bool = False) -> None:
-        self._download_bucket_parts(req, staging_dir)
+        staged_parts = self._download_bucket_parts(req, staging_dir)
 
         # Completeness is judged against the declared registry, not against
         # whatever happened to answer: an owner nobody declared cannot be
@@ -293,18 +290,29 @@ class GDPROrchestrator:
         missing = self._missing_services(req, registry)
         partial = partial or bool(missing) or bool(registry.problems)
 
-        archive_root = _secure_mkdir(self._archive_root())
-        zip_path = archive_root / f'export_{req.pk}.zip'
-
         date_str = req.created_at.strftime('%Y-%m-%d')
         zip_root = f'export_{date_str}'
 
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f'{zip_root}/README.txt', self._build_readme(req, partial, missing))
-            if staging_dir.exists():
-                for file in staging_dir.rglob('*'):
-                    if file.is_file():
-                        zf.write(file, f'{zip_root}/{file.relative_to(staging_dir)}')
+        # Built in the staging area (0700, local, about to be deleted), then
+        # handed to the export store under a KEY. What lands on the row is
+        # that key, never an absolute path: the download view runs in a
+        # different process from this task, and a path is only meaningful
+        # inside the container that wrote it.
+        build_dir = _secure_mkdir(self._staging_root() / '.building')
+        zip_path = build_dir / f'export_{req.pk}.zip'
+
+        try:
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(f'{zip_root}/README.txt', self._build_readme(req, partial, missing))
+                if staging_dir.exists():
+                    for file in staging_dir.rglob('*'):
+                        if file.is_file():
+                            zf.write(file, f'{zip_root}/{file.relative_to(staging_dir)}')
+            archive_key = export_store.save_archive(
+                export_store.archive_key(req.correlation_id, req.pk), zip_path,
+            )
+        finally:
+            zip_path.unlink(missing_ok=True)
 
         from stapel_core.comm import mutate_and_emit
 
@@ -314,7 +322,7 @@ class GDPROrchestrator:
         # never told about must not silently exist (same discipline as
         # ``initiate_closure``). The email in ``_send_ready_notification``
         # below stays best-effort; the *event* is the contract.
-        req.archive_path     = str(zip_path)
+        req.archive_path     = archive_key
         req.status           = DataExportRequest.STATUS_READY
         req.is_partial       = partial
         req.missing_services = missing
@@ -338,6 +346,7 @@ class GDPROrchestrator:
         # PII must not linger in the staging area once zipped.
         if staging_dir.exists():
             shutil.rmtree(staging_dir, ignore_errors=True)
+        self._purge_bucket_parts(req, staged_parts)
 
         self._send_ready_notification(req, token)
         logger.info('GDPR export archive assembled [request=%s partial=%s missing=%s]',
@@ -353,15 +362,22 @@ class GDPROrchestrator:
         ]
         return [s for s in expected if s not in delivered]
 
-    def _download_bucket_parts(self, req: DataExportRequest, staging_dir: Path) -> None:
-        """Download parts uploaded to object storage into the local staging directory."""
+    def _download_bucket_parts(self, req: DataExportRequest, staging_dir: Path) -> list[int]:
+        """Download parts uploaded to object storage into the local staging directory.
+
+        Returns the pks of the parts whose bytes are now in the staging area
+        — the only ones :meth:`_purge_bucket_parts` may delete from the
+        peer's bucket once the archive exists.
+        """
         from django.core.files.storage import default_storage
 
+        staged: list[int] = []
         for part in req.parts.filter(status=DataExportPart.STATUS_DONE, bucket_path__isnull=False):
             dest_dir = staging_dir / part.service
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest_file = dest_dir / 'export.json'
             if dest_file.exists():
+                staged.append(part.pk)
                 continue
             # Checked again here, not only at ingest: this row may predate the
             # rule or have been written by something other than the
@@ -376,9 +392,38 @@ class GDPROrchestrator:
             try:
                 with default_storage.open(part.bucket_path) as src:
                     dest_file.write_bytes(src.read())
+                staged.append(part.pk)
             except Exception as e:
                 logger.error('Failed to download GDPR part from bucket [service=%s path=%s]: %s',
                              part.service, part.bucket_path, e)
+        return staged
+
+    def _purge_bucket_parts(self, req: DataExportRequest, staged_parts: list[int]) -> None:
+        """Delete the peer-uploaded slices now that they are inside the archive.
+
+        They were never deleted before 0.7.0. A remote data owner writes its
+        slice of a person's data to ``default_storage`` under
+        ``gdpr/<correlation_id>/<service>/export.json``, and on the ordinary
+        deployment ``default_storage`` is MEDIA_ROOT-backed — so those slices
+        stayed in a served root forever, with nothing scheduled to remove
+        them. Only parts this run actually staged are touched: a key the
+        export gate refused belongs to somebody else and is not ours to
+        delete (``gdpr.W014`` reports the exposure itself).
+        """
+        if not staged_parts:
+            return
+        from django.core.files.storage import default_storage
+
+        for part in req.parts.filter(pk__in=staged_parts).exclude(bucket_path=None):
+            try:
+                if default_storage.exists(part.bucket_path):
+                    default_storage.delete(part.bucket_path)
+            except Exception as e:  # pragma: no cover - backend-dependent
+                logger.error('Failed to delete GDPR export part from bucket '
+                             '[request=%s service=%s path=%s]: %s',
+                             req.pk, part.service, part.bucket_path, e)
+                continue
+            DataExportPart.objects.filter(pk=part.pk).update(bucket_path=None)
 
     def _send_ready_notification(self, req: DataExportRequest, token: str) -> None:
         try:
@@ -436,16 +481,10 @@ class GDPROrchestrator:
         return self._staging_root() / str(request_id)
 
     def _staging_root(self) -> Path:
-        configured = gdpr_settings.STAGING_ROOT or getattr(settings, 'GDPR_STAGING_ROOT', '')
-        if configured:
-            return Path(configured)
-        return Path(settings.MEDIA_ROOT) / 'gdpr' / 'staging'
+        return export_store.staging_root()
 
     def _archive_root(self) -> Path:
-        configured = gdpr_settings.ARCHIVE_ROOT or getattr(settings, 'GDPR_ARCHIVE_ROOT', '')
-        if configured:
-            return Path(configured)
-        return Path(settings.MEDIA_ROOT) / 'gdpr' / 'exports'
+        return export_store.archive_root()
 
     # -------------------------------------------------------------------------
     # Account closure / deletion

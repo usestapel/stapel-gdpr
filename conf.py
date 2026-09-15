@@ -88,7 +88,17 @@ Configure in Django settings::
         "DOWNLOAD_URL_TEMPLATE": "{frontend_url}/privacy/export/#token={token}",
 
         # -- Storage roots --------------------------------------------------
-        # Default: MEDIA_ROOT/gdpr/staging and MEDIA_ROOT/gdpr/exports.
+        # The private root holding export staging directories and finished
+        # archives. NEVER MEDIA_ROOT: the ordinary nginx shape serves
+        # MEDIA_ROOT as static files, so a zip of everything the system knows
+        # about a person would sit at a guessable, unauthenticated, cacheable
+        # URL. A root inside MEDIA_ROOT/STATIC_ROOT is refused at boot by
+        # gdpr.E013; leaving this unset is gdpr.W013, because the default
+        # (BASE_DIR/private/gdpr) is local to whichever container wrote it and
+        # a separate web process then 500s on the download.
+        "EXPORT_ROOT": "",
+        # Per-directory overrides of EXPORT_ROOT, kept from the pre-0.7.0
+        # shape. Default: EXPORT_ROOT/staging and EXPORT_ROOT/exports.
         "STAGING_ROOT": "",
         "ARCHIVE_ROOT": "",
         # Prefix a peer service's `bucket_path` must start with before this
@@ -171,6 +181,7 @@ gdpr_settings = AppSettings(
         "PRIMARY_IDENTITY_ERASURE": "anonymize",
         "DOWNLOAD_TTL_HOURS": 24,
         "DOWNLOAD_URL_TEMPLATE": "{frontend_url}/privacy/export/#token={token}",
+        "EXPORT_ROOT": "",
         "STAGING_ROOT": "",
         "ARCHIVE_ROOT": "",
         "EXPORT_BUCKET_PREFIX": "gdpr/{correlation_id}/",

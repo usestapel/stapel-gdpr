@@ -42,22 +42,22 @@ def sweep_pending_exports():
 
 
 def expire_export(req) -> None:
-    """Mark one export expired and delete its archive from disk.
+    """Mark one export expired and delete its archive from the export store.
 
     Shared by the download view (a token spent too late) and the scheduled
-    purge, so an expired export means "the ZIP is gone" in both paths.
+    purge, so an expired export means "the ZIP is gone" in both paths. Goes
+    through :mod:`stapel_gdpr.export_store`, so it removes the object
+    wherever the store actually is — including from the process that did not
+    write it, which a bare ``os.remove`` of an absolute path never could.
     """
-    import os
-
+    from . import export_store
     from .models import DataExportRequest
 
-    path = req.archive_path
-    if path and os.path.exists(path):
-        try:
-            os.remove(path)
-        except OSError as e:
-            logger.error('Failed to delete expired GDPR archive [request=%s path=%s]: %s',
-                         req.pk, path, e)
+    stored = req.archive_path
+    if stored and not export_store.delete_archive(stored):
+        if export_store.stored_archive_exists(stored):
+            logger.error('Failed to delete expired GDPR archive [request=%s key=%s]',
+                         req.pk, stored)
     DataExportRequest.objects.filter(pk=req.pk).update(
         status=DataExportRequest.STATUS_EXPIRED,
         archive_path=None,

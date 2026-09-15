@@ -1,5 +1,116 @@
 # Changelog
 
+## [0.7.0] — 2026-09-16
+
+### Fixed — a personal-data export no longer defaults into a root the web server serves
+
+**This is the library's default, not one deployment's mistake.** Found while
+tracing storage destinations on a live fleet; no exploitation is known.
+
+`GDPR_STAGING_ROOT` / `GDPR_ARCHIVE_ROOT` (and their namespaced twins)
+defaulted to `MEDIA_ROOT/gdpr/...`. The ordinary Django/nginx shape serves
+MEDIA_ROOT as static files —
+
+```nginx
+location /media { alias /media; add_header Cache-Control "public, max-age=2592000"; }
+```
+
+— so on a deployment that followed the ordinary shape, a ZIP holding
+everything the system knows about a person sat at a guessable URL, served
+without authentication and cacheable by every intermediary. The deployment
+did nothing wrong; the default did. Three mechanisms replace it, in that
+order of importance:
+
+* **`STAPEL_GDPR["EXPORT_ROOT"]`** — its own setting, never derived from
+  `MEDIA_ROOT`, defaulting to `BASE_DIR/private/gdpr` (or
+  `<tmpdir>/stapel-gdpr` where a project declares no `BASE_DIR`). No ordinary
+  `location /media` or `location /static` block can reach either.
+  `STAGING_ROOT` / `ARCHIVE_ROOT` remain as per-directory overrides and still
+  win when set, so a deployment that already moved its archives keeps working.
+* **`gdpr.E013`** — an export, staging or archive root inside `MEDIA_ROOT`,
+  `STATIC_ROOT` or `STATICFILES_DIRS` refuses the boot, naming the directory
+  and the setting that served it. An `Error` in the same spirit as
+  `stapel_core.storage.E001`, deliberately not a warning: a deployment
+  publishing personal-data archives is not degraded, and a warning is exactly
+  what let the old default run.
+* **`stapel_gdpr.export_store.PrivateFileSystemStorage`** — the store the
+  module writes through **raises on `url()`**. There is no address to guess
+  and none to leak. (Plain `FileSystemStorage(base_url=None)` is *not*
+  private: `base_url` falls back to `settings.MEDIA_URL`, so the obvious way
+  to build a private store still hands out `/media/<key>`.)
+
+The download itself is unchanged in shape and was already the right one: the
+authenticated `POST /gdpr/api/v1/user/data-export/download` spends a
+single-use token carried in the body, deletes the archive as it serves and
+answers `Cache-Control: no-store, private`. The library still never hands a
+subject a signed object-storage URL — a signed URL is a bearer credential to
+the complete dump that cannot be made single-use or revoked. A deployment that
+must use one anyway should keep the signature at **60 seconds or less**; see
+CONFIG.MD, "Where an export lives".
+
+### Fixed — an export that was READY and undownloadable
+
+`DataExportRequest.archive_path` held an **absolute filesystem path**, and the
+download view runs in a different process from the celery task that writes the
+archive. Two containers off the same image both have `/app/...` and neither
+has the other's bytes, so a correctly generated export answered a 500
+("archive file missing") to somebody exercising data portability after being
+told it was READY.
+
+The column now holds a **key inside the export store**, and the view streams
+from the store. A deployment whose processes do not share a filesystem points
+`settings.STORAGES["stapel_gdpr_exports"]` at S3/GCS/a shared volume and both
+resolve the same key; `gdpr.W013` says so at boot when neither a root nor a
+store was named. Rows written by 0.6.0 carry an absolute path and are still
+served — `export_store` treats an absolute value as legacy — so there is no
+migration and no column change.
+
+### Fixed — peer-uploaded export slices were never deleted
+
+In microservices mode a remote data owner writes its slice of a subject's data
+to `default_storage` under `gdpr/<correlation_id>/<service>/export.json`. The
+orchestrator copied the bytes into the ZIP and **left the object there
+forever**; on the ordinary deployment `default_storage` is MEDIA_ROOT-backed,
+so those slices sat in the served root too. Each slice is now deleted the
+moment it is inside the archive (only the ones this run actually staged — a
+key the `EXPORT_BUCKET_PREFIX` gate refused belongs to somebody else and is not
+ours to delete), and `DataExportPart.bucket_path` is cleared with it.
+`gdpr.W014` reports the remaining exposure at boot: a filesystem
+`default_storage` inside a served root with at least one remote owner declared.
+
+### What to do about archives already written under the old default
+
+On every deployment that ran 0.6.0 or earlier with the default roots:
+
+1. **Before upgrading**, decide the root: set `STAPEL_GDPR["EXPORT_ROOT"]` to a
+   directory outside `MEDIA_ROOT`/`STATIC_ROOT` that the web and worker
+   processes share, or configure `STORAGES["stapel_gdpr_exports"]`. Upgrading
+   without doing this leaves you on a per-container default and `gdpr.W013`.
+2. **Delete, do not move, `MEDIA_ROOT/gdpr/`.** Every ZIP under
+   `MEDIA_ROOT/gdpr/exports` is a complete personal-data dump whose download
+   window has long closed, and every directory under
+   `MEDIA_ROOT/gdpr/staging` is the same data unzipped. Nothing needs them:
+   `purge_expired_exports` drops the rows' `archive_path`, and a subject whose
+   token is still live can request a fresh export. Deleting the tree is the
+   remediation; relocating it keeps the exposure alive at a new path.
+3. **Purge the CDN/proxy cache** for `/media/gdpr/*` if MEDIA_ROOT was served
+   with a `public` cache header. An origin delete does not evict an
+   intermediary's copy.
+4. **Check the access logs** for hits under `/media/gdpr/` from outside your
+   own IPs. This is the only evidence that exists either way; a personal-data
+   breach is notifiable under Art. 33 within 72 hours of becoming aware.
+5. Also delete leftover peer slices under `MEDIA_ROOT/gdpr/<correlation-id>/`
+   in microservices mode — those predate the purge added here.
+
+### Minor, not major
+
+The setting default changes meaning and `archive_path` changes what it holds,
+so it is not a patch. It is a minor rather than a major because no HTTP path,
+request or response shape moves, `docs/schema.json` is unchanged, rows written
+by the previous version keep being served, and no migration runs. The one way
+a deployment can be refused where it previously started is `gdpr.E013` — which
+is the point of the release.
+
 ## [0.6.0] — 2026-09-11
 
 ### Added — a budget on the three doors that start work or send mail on request
