@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.7.3] — 2026-09-16
+
+### Fixed — a successful erasure announced itself as "not certifiable"
+
+`_maybe_finalize` runs after EVERY receipt, so a healthy multi-owner erasure
+passes through its blocker branch once per owner that has not answered yet.
+That branch logged at WARNING, so every SUCCESSFUL erasure emitted
+
+    GDPR erasure not certifiable, request stays erasing
+    [subject=…]: owners without an erasure receipt: recordings
+
+Measured on a client fleet on 2026-09-15, where a newly mounted error tracker
+filed it as a compliance defect: the warning at 23:03:02.747, the last
+receipt at .939, the request DELETED at .944. **197 milliseconds**, on all
+thirty-four requests in that database, every one of which completed.
+
+The cost is not noise for its own sake. An operator who sees "not certifiable"
+on every erasure stops reading it, and that is precisely when the one that is
+genuinely stuck arrives. So the two cases are now separated by the only thing
+that distinguishes them — whether the missing receipts can still come:
+
+* every blocker is "this owner has not answered yet" **and** every outstanding
+  part is inside its deadline → in flight, logged at DEBUG;
+* any registry problem (an owner nobody declared, a provider that never
+  registered), or a part past its deadline → nobody is coming, still WARNING.
+
+Nothing about the finalisation rule changed: the erasure still fails CLOSED
+and still refuses to flip to DELETED without a full receipt set. What changed
+is that waiting is no longer reported as failing.
+
 ## [0.7.2] — 2026-09-16
 
 ### Fixed — serve-then-delete is only free on a filesystem

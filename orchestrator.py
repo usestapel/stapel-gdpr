@@ -874,6 +874,32 @@ class GDPROrchestrator:
             if part and part.state != ErasurePart.STATE_DONE:
                 part.record_receipt()
 
+    @staticmethod
+    def _still_in_flight(request, blockers: list[str], registry) -> bool:
+        """Are the missing receipts ones that can still arrive?
+
+        True only when EVERY blocker is "this owner has not answered yet" and
+        every outstanding part is inside its deadline. A registry problem
+        (an owner nobody declared, a provider that never registered) is never
+        in flight: nothing about waiting longer will fix it.
+        """
+        if registry.problems:
+            return False
+        if not request.unreceipted_owners:
+            return False
+        # Exactly one blocker, and it is the unreceipted-owners line this
+        # method is about. Anything else means something other than waiting.
+        if len(blockers) != 1 or not blockers[0].startswith(
+            'owners without an erasure receipt:'
+        ):
+            return False
+        now = timezone.now()
+        outstanding = request.parts.exclude(state=ErasurePart.STATE_DONE)
+        for part in outstanding:
+            if part.deadline and part.deadline <= now:
+                return False
+        return True
+
     def _maybe_finalize(self, request: ErasureRequest) -> None:
         """Flip the erasure to DELETED only against a full set of receipts.
 
@@ -921,6 +947,35 @@ class GDPROrchestrator:
         waived = False
         if blockers:
             if not gdpr_settings.ALLOW_ERASURE_WITHOUT_RECEIPTS:
+                # WAITING is not FAILING, and this line used to say it was.
+                #
+                # `_maybe_finalize` runs after EVERY receipt, so a healthy
+                # multi-owner erasure passes through here once per owner that
+                # has not answered yet. Logged at WARNING that made every
+                # SUCCESSFUL erasure emit "not certifiable" — measured on a
+                # client fleet 2026-09-15: the warning at 23:03:02.747, the
+                # last receipt at .939, the request DELETED at .944. One
+                # hundred and ninety-seven milliseconds, reported as a
+                # compliance problem, on all thirty-four requests.
+                #
+                # An operator who sees that on every erasure stops reading it,
+                # which is exactly when the one that is genuinely stuck
+                # arrives. So the two cases are separated by the only thing
+                # that distinguishes them — whether the receipts can still
+                # come — rather than by hoping somebody checks the timestamps:
+                #
+                #   * only unreceipted owners, every part still inside its
+                #     deadline  -> in flight, DEBUG;
+                #   * anything the registry itself reports wrong, or a part
+                #     past its deadline -> nobody is coming, WARNING.
+                if self._still_in_flight(request, blockers, registry):
+                    logger.debug(
+                        'GDPR erasure %s awaiting receipts '
+                        '[subject=%s:%s correlation=%s]: %s',
+                        request.state, request.subject_type, request.subject_key,
+                        request.correlation_id, '; '.join(blockers),
+                    )
+                    return
                 logger.warning(
                     'GDPR erasure not certifiable, request stays %s '
                     '[subject=%s:%s correlation=%s]: %s',
