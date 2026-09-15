@@ -1,13 +1,37 @@
 #!/usr/bin/env bash
-set -e
-echo "Running ruff lint check before push..."
-ruff check . --select E,F,W --ignore E501
-echo "Lint check passed."
+# Scan WHAT IS BEING PUSHED, never the working tree: git names each ref on
+# stdin, and the committed tree behind it is the only thing this push can
+# publish. Scanning "." made two sessions sharing one worktree block each
+# other — a peer's uncommitted files failed the other's push.
+set -eo pipefail
 
-# A private client name must not leave this machine in a public tree or a
-# commit message (stapel-exposure-lint EXP001/EXP002; the list is
-# ~/.stapel/private-names, outside every repo). Skipped where the tool is
-# not on PATH — a checkout without stapel-tools is not the owner's.
-if command -v stapel-exposure-lint >/dev/null 2>&1; then
-    stapel-exposure-lint . --commits
-fi
+zero='0000000000000000000000000000000000000000'
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # nothing to push, or a deletion: no tree to judge
+    if [ -z "$local_sha" ] || [ "$local_sha" = "$zero" ]; then
+        continue
+    fi
+
+    echo "Running ruff lint check on ${local_sha:0:12}..."
+    dest="$tmp/${local_sha:0:12}"
+    mkdir -p "$dest"
+    git archive "$local_sha" | tar -x -C "$dest"
+    ruff check "$dest" --select E,F,W --ignore E501
+    rm -rf "$dest"
+    echo "Lint check passed."
+
+    # A private client name must not leave this machine in a public tree or a
+    # commit message (stapel-exposure-lint EXP001/EXP002; the list is
+    # ~/.stapel/private-names, outside every repo). Skipped where the tool is
+    # not on PATH — a checkout without stapel-tools is not the owner's.
+    if command -v stapel-exposure-lint >/dev/null 2>&1; then
+        if [ -z "$remote_sha" ] || [ "$remote_sha" = "$zero" ]; then
+            stapel-exposure-lint --pushed "$local_sha"
+        else
+            stapel-exposure-lint --pushed "$local_sha" --remote "$remote_sha"
+        fi
+    fi
+done
