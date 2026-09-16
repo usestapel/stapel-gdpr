@@ -204,10 +204,12 @@ class TestLegalHold:
         past = timezone.now() - timedelta(days=1)
         ReRegistrationHash.objects.create(
             hash_type="email", hash_value="h1", user_id_was=str(user.pk), expires_at=past,
+            scheme=ReRegistrationHash.SCHEME_HMAC_V1,
         )
         other_id = uuid.uuid4()
         ReRegistrationHash.objects.create(
             hash_type="email", hash_value="h2", user_id_was=str(other_id), expires_at=past,
+            scheme=ReRegistrationHash.SCHEME_HMAC_V1,
         )
         LegalHold.objects.create(user_id=user.pk, reason="litigation")
 
@@ -257,6 +259,9 @@ class TestReRegistrationHash:
         ReRegistrationHash.objects.create(
             hash_type="email",
             hash_value=compute_hash("email", "old@example.com"),
+            # A real hmac row, so it names that scheme — the value above is
+            # computed by the library's own compute_hash().
+            scheme=ReRegistrationHash.SCHEME_HMAC_V1,
             user_id_was=str(user.pk),
             expires_at=timezone.now() - timedelta(days=1),
         )

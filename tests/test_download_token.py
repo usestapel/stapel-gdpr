@@ -177,6 +177,10 @@ class TestReRegistrationHashScheme:
         ReRegistrationHash.objects.create(
             hash_type="email",
             hash_value=hashlib.sha256(b"person@example.com").hexdigest(),
+            # Stated explicitly since the write guard: this test is ABOUT an
+            # unattributable row, so it has to say so rather than let a
+            # default say it — which is the whole distinction the guard draws.
+            scheme=ReRegistrationHash.SCHEME_UNVERIFIED,
             user_id_was=str(user.pk),
             expires_at=timezone.now() + timedelta(days=30),
         )
@@ -204,6 +208,10 @@ class TestReRegistrationHashScheme:
         ReRegistrationHash.objects.create(
             hash_type="email",
             hash_value=hashlib.sha256(b"person@example.com").hexdigest(),
+            # Stated explicitly since the write guard: this test is ABOUT an
+            # unattributable row, so it has to say so rather than let a
+            # default say it — which is the whole distinction the guard draws.
+            scheme=ReRegistrationHash.SCHEME_UNVERIFIED,
             user_id_was=str(user.pk),
             expires_at=timezone.now() + timedelta(days=30),
         )
@@ -222,6 +230,9 @@ class TestReRegistrationHashScheme:
         ReRegistrationHash.objects.create(
             hash_type="phone",
             hash_value=hashlib.sha256(b"+15550001111").hexdigest(),
+            # Explicit, as above: the purge is about unattributable rows, so
+            # the fixture must state that rather than inherit it by default.
+            scheme=ReRegistrationHash.SCHEME_UNVERIFIED,
             user_id_was=str(user.pk),
             expires_at=timezone.now() + timedelta(days=30),
         )
@@ -230,3 +241,68 @@ class TestReRegistrationHashScheme:
 
         remaining = list(ReRegistrationHash.objects.values_list("scheme", flat=True))
         assert remaining == [ReRegistrationHash.SCHEME_HMAC_V1]
+
+
+class TestAnUnverifiedRowCannotBeWrittenAtAll:
+    """The write is refused, not merely reported.
+
+    `scheme` defaulting to UNVERIFIED made a bad write DETECTABLE — gdpr.E004
+    reports it — and detectable arrived too late: E004 is an Error, so the
+    rows refuse the identity service's next boot, hours after the erasure that
+    wrote them.
+
+    Found on 2026-09-16 by a deliberate erasure drill on a live fleet. One
+    erasure produced three rows in the same second: one correct
+    hmac-sha256-v1 from this library, and two unverified ones from a second
+    implementation in stapel-auth that digested the address with a bare
+    unsalted sha256 and named no scheme. auth crash-looped on its next
+    restart.
+    """
+
+    def test_omitting_the_scheme_raises_instead_of_writing(self, user):
+        import hashlib
+
+        with pytest.raises(ValueError) as exc:
+            ReRegistrationHash.objects.create(
+                hash_type="email",
+                hash_value=hashlib.sha256(b"person@example.com").hexdigest(),
+                user_id_was=str(user.pk),
+                expires_at=timezone.now() + timedelta(days=30),
+            )
+        message = str(exc.value)
+        assert "without a scheme" in message
+        assert "store_hashes" in message          # names the way to do it right
+        assert "gdpr.E004" in message             # and what it would have cost
+        assert ReRegistrationHash.objects.count() == 0
+
+    def test_stating_unverified_explicitly_is_allowed(self, user):
+        """A caller saying what it knows is not the defect; a default
+        answering for a caller that said nothing is."""
+        import hashlib
+
+        ReRegistrationHash.objects.create(
+            hash_type="email",
+            hash_value=hashlib.sha256(b"person@example.com").hexdigest(),
+            scheme=ReRegistrationHash.SCHEME_UNVERIFIED,
+            user_id_was=str(user.pk),
+            expires_at=timezone.now() + timedelta(days=30),
+        )
+        assert ReRegistrationHash.objects.count() == 1
+
+    def test_the_sanctioned_writer_still_works(self, user):
+        from stapel_gdpr.reregistration import store_hashes
+
+        assert store_hashes(user.pk, email="person@example.com") == 1
+        row = ReRegistrationHash.objects.get()
+        assert row.scheme == ReRegistrationHash.SCHEME_HMAC_V1
+
+    def test_an_existing_row_can_still_be_updated(self, user):
+        """The guard is on INSERT. A row loaded from the database and saved
+        again is not a caller inventing a scheme."""
+        from stapel_gdpr.reregistration import store_hashes
+
+        store_hashes(user.pk, email="person@example.com")
+        row = ReRegistrationHash.objects.get()
+        row.expires_at = timezone.now() + timedelta(days=60)
+        row.save()
+        assert ReRegistrationHash.objects.get().scheme == ReRegistrationHash.SCHEME_HMAC_V1

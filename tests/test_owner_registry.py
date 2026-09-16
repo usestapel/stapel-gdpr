@@ -318,6 +318,9 @@ class TestReregistrationCheckDatabaseContract:
         ReRegistrationHash.objects.create(
             hash_type="email",
             hash_value=hashlib.sha256(b"person@example.com").hexdigest(),
+            # Explicit since the write guard: this fixture IS an
+            # unattributable row, so it says so.
+            scheme=ReRegistrationHash.SCHEME_UNVERIFIED,
             user_id_was=str(user.pk),
             expires_at=timezone.now() + timedelta(days=30),
         )

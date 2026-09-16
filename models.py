@@ -764,6 +764,54 @@ class ReRegistrationHash(models.Model):
     created_at  = models.DateTimeField(auto_now_add=True)
     expires_at  = models.DateTimeField()    # +24 months
 
+    def __init__(self, *args, **kwargs):
+        # Did the CALLER say how this hash was computed, or did the field
+        # default answer for them? Recorded at construction because by the
+        # time save() runs Django has already filled the default in and the
+        # two are indistinguishable. Positional args mean Django's own
+        # from_db() load, which is never a caller and never guarded.
+        self._scheme_stated = bool(args) or 'scheme' in kwargs
+        super().__init__(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        """Refuse an INSERT that does not say how its hash was computed.
+
+        `scheme` defaults to UNVERIFIED so that a row whose provenance nobody
+        recorded is not mistaken for a trusted one. That made the bad write
+        DETECTABLE — gdpr.E004 reports it — but detectable arrived too late:
+        E004 is an Error, so the rows took the identity service down on its
+        next restart, hours after the erasure that wrote them. Found exactly
+        that way on 2026-09-16, by a deliberate erasure drill: one correct
+        hmac-sha256-v1 row and two unverified ones written in the same
+        second, and auth crash-looping on the next rebuild.
+
+        The writer was a second implementation living outside this library
+        that digested the address with a bare, UNSALTED sha256 — recoverable
+        from a wordlist in seconds — and never named a scheme, so the model
+        default spoke for it.
+
+        So the write is refused rather than recorded. Loud, attributable to
+        the caller that did it, and at the moment it happens.
+
+        Passing `scheme=` explicitly is always allowed, including UNVERIFIED:
+        that is a caller stating what it knows rather than a default
+        answering for one, which is what a migration backfilling old rows and
+        a test exercising the purge both legitimately do.
+        """
+        if self._state.adding and not getattr(self, '_scheme_stated', False):
+            raise ValueError(
+                "ReRegistrationHash written without a scheme. The default is "
+                f"{self.SCHEME_UNVERIFIED!r}, which means 'nobody recorded how "
+                "this hash was computed' — such a row is ignored by lookups, "
+                "reported by the gdpr.E004 system check, and that check is an "
+                "Error, so it will refuse this service's next boot. Use "
+                "stapel_gdpr.reregistration.store_hashes(), which computes the "
+                "purpose-bound keyed HMAC and records the scheme. If you "
+                "really mean an unattributable row, say so: pass "
+                "scheme=ReRegistrationHash.SCHEME_UNVERIFIED explicitly."
+            )
+        super().save(*args, **kwargs)
+
     class Meta:
         app_label     = 'gdpr'
         unique_together = [('hash_type', 'hash_value')]

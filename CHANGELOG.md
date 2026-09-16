@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.8.0] — 2026-09-17
+
+Minor, not patch: a write that used to succeed now raises.
+
+### Fixed — an unverified hash row is refused, not merely reported
+
+`ReRegistrationHash.scheme` defaults to `unverified` so that a row whose
+provenance nobody recorded is not mistaken for a trusted one. That made a bad
+write DETECTABLE — `gdpr.E004` reports it — and detectable arrived far too
+late: E004 is an **Error**, so the rows refuse the identity service's next
+boot, hours after the erasure that wrote them.
+
+Found on 2026-09-16 by a deliberate erasure drill on a live fleet, which is
+the only reason it was found before three real closures came due. One erasure
+produced three rows in the same second: one correct `hmac-sha256-v1` from
+`store_hashes`, and two `unverified` ones from a second implementation living
+in stapel-auth that digested the address with a bare **unsalted** sha256 —
+recoverable from a wordlist in seconds — and named no scheme, so the model
+default spoke for it. The identity service crash-looped on its next restart.
+
+So the insert is refused. `save()` raises on an INSERT whose caller did not
+say how the hash was computed, naming `store_hashes` and what the row would
+have cost. Passing `scheme=` explicitly is always allowed, **including**
+`SCHEME_UNVERIFIED` — that is a caller stating what it knows rather than a
+default answering for one, which is what a migration backfilling old rows and
+a test exercising the purge both legitimately do. The guard is on INSERT only:
+a row loaded from the database and re-saved is not a caller inventing a
+scheme.
+
+Callers that omit `scheme` must move to `store_hashes()`. stapel-auth does so
+in the release beside this one.
+
 ## [0.7.3] — 2026-09-16
 
 ### Fixed — a successful erasure announced itself as "not certifiable"
