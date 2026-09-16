@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.8.1] — 2026-09-17
+
+### Changed — one definition of what "erased" means
+
+`_anonymize_identity` delegates to `stapel_core.gdpr.identity.anonymize_identity`,
+and the two field lists are now the same objects rather than two equal copies.
+
+This module anonymises the identity-owning service's user row; core's
+`identity_mirror` owner anonymises the copy every consuming service keeps. They
+were two implementations of the same rule, held together by a test comparing
+two lists — which notices drift rather than preventing it, and only on the day
+somebody runs it.
+
+core owns the rule because core creates the rows it applies to. An erasure has
+to leave the primary row and every mirror of it in the same state, or "erased"
+means one thing in the identity service and another everywhere else.
+
+Floor raised to `stapel-core>=0.80.1`. 0.79.0 introduced the mirror owner;
+0.80.1 is the first version that boots with it, because 0.79.0 registered it
+without a `user.merged` handler and `lifecycle.E001` refuses that combination.
+
 ## [0.8.0] — 2026-09-17
 
 Minor, not patch: a write that used to succeed now raises.

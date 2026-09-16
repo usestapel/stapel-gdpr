@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-gdpr"
-version = "0.8.0"
+version = "0.8.1"
 description = "GDPR data export and account deletion Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,7 +27,13 @@ classifiers = [
 dependencies = [
     # Floor: 0.26.0 emits docs/errors.json with the `owner` field the
     # committed artifact and its drift gate require.
-    "stapel-core>=0.26.0,<1.0",
+    # 0.80.1 floor: this module delegates its identity anonymiser to
+    # stapel_core.gdpr.identity, which is the single implementation of "what
+    # erased means" for the primary row AND for the mirrored rows every
+    # consuming service keeps. 0.79.0 introduced it; 0.80.1 is the first
+    # version that boots, because 0.79.0 registered the mirror as a data owner
+    # without a user.merged handler and lifecycle.E001 refuses that.
+    "stapel-core>=0.80.1,<1.0",
     "celery>=5.3",
 ]
 

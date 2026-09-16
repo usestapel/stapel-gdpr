@@ -36,6 +36,8 @@ import logging
 
 from django.contrib.auth import get_user_model
 
+from stapel_core.gdpr import identity as _core_identity
+
 from .conf import gdpr_settings
 from .errors import SessionRevocationUnavailable
 
@@ -188,15 +190,17 @@ def revoke_sessions(user_id, *, emit=None) -> str:
 #: user model has them. A host that stores personal data in fields of its own
 #: erases those through a ``PRIMARY_IDENTITY_ERASURE`` callable or a provider —
 #: this list is what the framework user model carries.
-_IDENTITY_FIELDS = (
-    "email", "phone", "first_name", "last_name", "bio", "avatar",
-    "oauth_provider", "oauth_id", "last_login_ip", "username",
-)
+# Owned by stapel-core, not restated here. Two copies of "what counts as
+# identity" is two answers to "what does erased mean", and they drift the day
+# somebody adds a field to one. core creates the mirrored user rows every
+# consuming service keeps, so core owns the rule; this module applies it to
+# the primary row and core's identity_mirror owner applies it to the copies.
+_IDENTITY_FIELDS = _core_identity.IDENTITY_FIELDS
 
 #: Fields whose surviving value proves the erasure did not happen. Checked
 #: after every strategy, including a host-supplied one — the defect this
 #: guards against is an ``anonymize()`` that quietly does nothing.
-_IDENTIFYING_FIELDS = ("email", "phone", "username")
+_IDENTIFYING_FIELDS = _core_identity.IDENTIFYING_FIELDS
 
 
 def _identity_snapshot(user) -> dict:
@@ -210,49 +214,21 @@ def _identity_snapshot(user) -> dict:
 def _anonymize_identity(user) -> None:
     """Overwrite every identity-bearing field with a tombstone, in place.
 
-    Irreversible on purpose: the values are overwritten rather than moved,
-    so nothing is left to restore the person from. The row itself survives
-    because references to it do — an account whose primary key vanishes
-    takes unrelated rows with it (or breaks them), which is why deletion is
-    the opt-in strategy and not the default.
+    Delegates to :func:`stapel_core.gdpr.identity.anonymize_identity`, which
+    is the single implementation. It used to live here and be re-implemented
+    there, and the pair was held together by a test comparing two field lists
+    — which is a way of noticing drift, not a way of preventing it.
+
+    core owns the rule because core creates the rows it applies to: every
+    service that consumes an external identity keeps a mirrored user row, and
+    an erasure has to leave the primary row and every mirror of it in the same
+    state or "erased" means one thing in the identity service and another
+    everywhere else.
+
+    Irreversible on purpose, and the row itself survives — see core's module
+    docstring for why deletion is the opt-in strategy rather than the default.
     """
-    import uuid
-
-    tombstone = f"deleted-{uuid.uuid4().hex}"
-    updates = {
-        "username": tombstone,
-        # RFC 2606 reserves .invalid: the address cannot be routed anywhere.
-        "email": f"{tombstone}@deleted.invalid",
-    }
-    fields = {f.name for f in user._meta.get_fields() if getattr(f, "concrete", False)}
-    changed = []
-    for name in _IDENTITY_FIELDS:
-        if name not in fields:
-            continue
-        if name in updates:
-            value = updates[name]
-        else:
-            field = user._meta.get_field(name)
-            value = None if field.null else ""
-        setattr(user, name, value)
-        changed.append(name)
-
-    for name, value in (("is_active", False), ("is_staff", False), ("is_superuser", False)):
-        if name in fields:
-            setattr(user, name, value)
-            changed.append(name)
-    if "staff_roles" in fields:
-        user.staff_roles = []
-        changed.append("staff_roles")
-
-    # No password left to try: not a hash of an unknown string, an
-    # unusable marker that can never validate.
-    user.set_unusable_password()
-    changed.append("password")
-
-    # A plain save(), never QuerySet.update(): the same observer discipline
-    # as set_active() — consumers are told the row changed.
-    user.save(update_fields=sorted(set(changed)))
+    _core_identity.anonymize_identity(user)
 
 
 def erase_identity(user_id) -> str:

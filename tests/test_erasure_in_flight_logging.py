@@ -120,3 +120,44 @@ def test_the_full_receipt_set_still_finalises(caplog):
     request.refresh_from_db()
     assert request.state == ErasureRequest.STATE_DELETED
     assert request.completeness_waived is False
+
+
+class TestOneDefinitionOfErased:
+    """The primary row and every mirror of it must end in the same state.
+
+    This module anonymises the identity-owning service's user row; core's
+    `identity_mirror` owner anonymises the copy every consuming service keeps.
+    Until 0.8.1 those were two implementations held together by a test that
+    compared two field lists — which notices drift rather than preventing it.
+    """
+
+    def test_the_field_lists_are_the_same_object_not_two_equal_ones(self):
+        from stapel_core.gdpr import identity as core_identity
+
+        from stapel_gdpr import lifecycle
+
+        assert lifecycle._IDENTITY_FIELDS is core_identity.IDENTITY_FIELDS
+        assert lifecycle._IDENTIFYING_FIELDS is core_identity.IDENTIFYING_FIELDS
+
+    def test_both_sides_leave_a_row_in_the_same_shape(self, db, django_user_model):
+        from stapel_core.gdpr import identity as core_identity
+
+        from stapel_gdpr import lifecycle
+
+        primary = django_user_model.objects.create(
+            username="a@example.com", email="a@example.com"
+        )
+        mirror = django_user_model.objects.create(
+            username="b@example.com", email="b@example.com"
+        )
+
+        lifecycle._anonymize_identity(primary)
+        core_identity.anonymize_identity(mirror)
+
+        primary.refresh_from_db()
+        mirror.refresh_from_db()
+        for row in (primary, mirror):
+            assert row.email.endswith("@deleted.invalid")
+            assert row.username.startswith("deleted-")
+            assert row.is_active is False
+            assert not row.has_usable_password()
