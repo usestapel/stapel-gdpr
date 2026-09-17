@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.8.2] — 2026-09-18
+
+### Fixed — an erasure remembers the address, not the placeholder it wrote
+
+A completed account erasure left **two** `ReRegistrationHash` rows for one
+person: the digest of the address the re-registration memory exists for, and
+the digest of the `deleted-<hex>@deleted.invalid` tombstone written over it.
+
+`store_hashes` is reached from both sides of the primary-identity erasure —
+once while the user row still carries the real identifier, once afterwards from
+the owner that erases in the identity service. It is idempotent per digest, but
+the two calls see two different values, so each wrote its own row. The second
+one can never match a lookup (nobody signs up at an RFC 2606 `.invalid`
+domain), and it makes any per-subject count of that compliance table wrong.
+
+`store_hashes` now refuses a tombstone identifier. The rule lives with the
+table rather than at either caller, because a rule enforced at a call site is
+one the next caller does not have. Recognition is the unroutable `.invalid`
+domain alone — `deleted-account@shop.example` is a real mailbox and is still
+remembered.
+
+Migration `0006` removes the rows already on file, and only the ones it can
+prove: the placeholder is still on the erased user's row, so the digest is
+recomputed from it and must also match that row's `user_id_was`. A subject
+erased with `PRIMARY_IDENTITY_ERASURE="delete"`, or rows written under another
+key, cannot be proved and are left to expire with the normal retention.
+
+Reported as usestapel/stapel-gdpr#1, found by a deliberate erasure drill.
+
 ## [0.8.1] — 2026-09-17
 
 ### Changed — one definition of what "erased" means

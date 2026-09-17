@@ -79,11 +79,35 @@ def _legacy_digest(hash_type: str, value: str) -> str:
     return hashlib.sha256(f'{_key().decode()}:{hash_type}:{normalized}'.encode()).hexdigest()
 
 
+def _is_tombstone(value: str) -> bool:
+    """Is this identifier the placeholder an erasure already wrote?
+
+    Only the address shape is recognised, and only by its RFC 2606 ``.invalid``
+    domain: that domain cannot be routed, so no person can ever own an address
+    ending in it. A prefix test would be a wrong answer waiting to happen —
+    ``deleted-account@shop.example`` is a real mailbox.
+    """
+    from stapel_core.gdpr.identity import TOMBSTONE_EMAIL_SUFFIX
+
+    return (value or '').strip().lower().endswith(TOMBSTONE_EMAIL_SUFFIX)
+
+
 def store_hashes(user_id, email: str | None = None, phone: str | None = None) -> int:
     """Persist re-registration hashes for a user about to be erased.
 
     Returns the number of hashes written. Idempotent — re-running for the
     same identifier does not duplicate rows.
+
+    A TOMBSTONE identifier is refused. One erasure reaches this function from
+    both sides of the primary-identity erasure: once while the user row still
+    carries the address the memory exists for, and once afterwards, when the
+    row carries ``deleted-<hex>@deleted.invalid``. The two calls are idempotent
+    per digest and the values differ, so the second wrote a second row — a
+    digest of an address nobody can ever sign up with, which no lookup can
+    match, counted by anyone who audits this table per subject. The refusal
+    lives here rather than at either caller because the table is this
+    library's, and a rule enforced at a call site is a rule the next caller
+    does not have.
     """
     from .models import ReRegistrationHash
 
@@ -91,6 +115,14 @@ def store_hashes(user_id, email: str | None = None, phone: str | None = None) ->
     expires_at = timezone.now() + RETENTION
     for hash_type, value in (('email', email), ('phone', phone)):
         if not value:
+            continue
+        if _is_tombstone(value):
+            logger.debug(
+                're-registration hash skipped for user %s: the %s identifier '
+                'is already a tombstone, so the erasure has run and the '
+                'identifier this table remembers was taken before it',
+                user_id, hash_type,
+            )
             continue
         _, created = ReRegistrationHash.objects.get_or_create(
             hash_type=hash_type,

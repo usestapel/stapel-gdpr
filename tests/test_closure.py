@@ -246,6 +246,39 @@ class TestReRegistrationHash:
         assert is_reregistration(phone="+7 999 123-45-67") is True  # normalized
         assert is_reregistration(phone="+15550001111") is False
 
+    def test_the_call_after_identity_erasure_adds_no_row(self, user):
+        """One erasure reaches store_hashes from both sides of erase_identity.
+
+        The second caller sees the tombstone the erasure wrote over the
+        address, and its digest is a row no lookup can ever match.
+        """
+        from django.contrib.auth import get_user_model
+
+        from stapel_gdpr.reregistration import store_hashes
+
+        closure = gdpr_orchestrator.initiate_closure(user.pk)
+        gdpr_orchestrator.execute_deletion(closure)
+
+        erased = get_user_model().objects.get(pk=user.pk)
+        assert erased.email.endswith("@deleted.invalid")
+
+        rows = ReRegistrationHash.objects.filter(user_id_was=str(user.pk))
+        before = rows.count()
+        assert store_hashes(user.pk, email=erased.email) == 0
+        assert rows.count() == before
+
+    def test_a_tombstone_address_is_never_hashed(self, user):
+        from stapel_gdpr.reregistration import store_hashes
+
+        assert store_hashes(user.pk, email="deleted-abc123@deleted.invalid") == 0
+        assert ReRegistrationHash.objects.count() == 0
+
+    def test_a_real_address_that_reads_like_one_is_still_hashed(self, user):
+        """The refusal is the unroutable domain, never the word "deleted"."""
+        from stapel_gdpr.reregistration import store_hashes
+
+        assert store_hashes(user.pk, email="deleted-account@shop.example") == 1
+
     def test_store_hashes_idempotent(self, user):
         from stapel_gdpr.reregistration import store_hashes
 
