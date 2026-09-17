@@ -340,7 +340,10 @@ class TestIncompleteOutcome:
         from stapel_gdpr.models import ErasureRequest
 
         assert erasure.outcome == ErasureRequest.OUTCOME_PENDING
-        assert erasure.unanswered_owners == ["fake", "silent"]
+        # Membership, not equality: a registered provider answers at dispatch
+        # from stapel-core 0.83.0, so which owners are still silent depends on
+        # the core in the graph. The owner that answers nowhere is the claim.
+        assert "silent" in erasure.unanswered_owners
 
     def test_a_timed_out_owner_makes_the_request_incomplete(self, erasure):
         from stapel_gdpr.models import ErasureRequest
@@ -419,4 +422,4 @@ class TestIncompleteOutcome:
         model_admin = django_admin.site._registry[ErasureRequest]
         assert "outcome_label" in model_admin.list_display
         assert model_admin.outcome_label(erasure) == "incomplete"
-        assert model_admin.unanswered_label(erasure) == "fake, silent"
+        assert "silent" in model_admin.unanswered_label(erasure)
