@@ -66,18 +66,24 @@ def _acknowledge(dsar: DsarRequest) -> None:
     from stapel_core.notifications import request_notification
 
     try:
-        request_notification(
+        queued = request_notification(
             email=dsar.subject_email,
             notification_type="gdpr.dsar.received",
             variables={
                 "kind": dsar.kind,
                 "received_at": dsar.received_at.isoformat(),
                 "resolve_due_at": dsar.resolve_due_at.isoformat(),
+                "resolve_due_date": dsar.resolve_due_at.date().isoformat(),
                 "reference": str(dsar.pk),
             },
         )
     except Exception as e:
         logger.error("GDPR DSAR acknowledgement failed [dsar=%s]: %s", dsar.pk, e)
+        return
+    if not queued:
+        # request_notification reports a failed publish as False, not an
+        # exception: the acknowledgement did not go, so the clock stays open.
+        logger.error("GDPR DSAR acknowledgement not queued [dsar=%s]", dsar.pk)
         return
 
     dsar.ack_sent_at = timezone.now()
@@ -106,6 +112,7 @@ def _notify_staff(dsar: DsarRequest) -> None:
                     "channel": dsar.channel,
                     "subject_email": dsar.subject_email,
                     "resolve_due_at": dsar.resolve_due_at.isoformat(),
+                    "resolve_due_date": dsar.resolve_due_at.date().isoformat(),
                     "reference": str(dsar.pk),
                 },
             )

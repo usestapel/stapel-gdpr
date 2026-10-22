@@ -76,6 +76,34 @@ class TestIntake:
         assert dsar.ack_sent_at is None
         assert dsar.state == DsarRequest.STATE_RECEIVED
 
+    def test_an_unqueued_acknowledgement_is_not_recorded_as_sent(self, db, monkeypatch):
+        """request_notification reports a failed publish as False, not a raise."""
+        import stapel_core.notifications as notifications
+
+        from stapel_gdpr.dsar import create_dsar
+
+        monkeypatch.setattr(notifications, "request_notification", lambda **kw: False)
+        dsar = create_dsar(kind="rectification", subject_email="a@example.com")
+        assert dsar.ack_sent_at is None
+        assert dsar.state == DsarRequest.STATE_RECEIVED
+
+    def test_the_letters_carry_a_readable_due_date(self, db, monkeypatch):
+        import stapel_core.notifications as notifications
+
+        from stapel_gdpr.dsar import create_dsar
+
+        sent = []
+        monkeypatch.setattr(
+            notifications, "request_notification",
+            lambda **kw: sent.append(kw) or True,
+        )
+        dsar = create_dsar(kind="access", subject_email="a@example.com")
+        due = dsar.resolve_due_at.date().isoformat()
+        assert {kw["notification_type"] for kw in sent} == {
+            "gdpr.dsar.received", "gdpr.dsar.opened",
+        }
+        assert all(kw["variables"]["resolve_due_date"] == due for kw in sent)
+
     def test_erasure_kind_starts_the_cancellable_closure(self, user):
         from stapel_gdpr.dsar import create_dsar
         from stapel_gdpr.models import AccountClosureRequest

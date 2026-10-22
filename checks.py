@@ -50,6 +50,15 @@ for that sentence to appear.
   a filesystem store inside a served root, so the slices peers upload land
   there too. They are deleted the moment the archive is assembled, which
   bounds the window rather than closing it.
+* ``gdpr.W015`` — ``AccountClosureGuardMiddleware`` is not in ``MIDDLEWARE``:
+  an account in its closure grace period, or already erasing, passes every
+  endpoint outside this library with a token minted before the closure.
+* ``gdpr.W016`` — stapel-notifications is installed in this process and does
+  not register a notification type this library requests (the DSAR
+  acknowledgement, the staff alert, the export letter). The request is
+  dropped as unknown and the acknowledgement clock is missed. A fleet whose
+  notifications run elsewhere cannot be asked from here; this check is
+  silent there.
 
 E009/E010/W011/W012 are the 2026-09-07 fleet incident, found only by an
 external audit: a host listing ``"profiles"``/``"cdn"`` (the app labels;
@@ -78,7 +87,9 @@ __all__ = [
     "check_data_owner_registry",
     "check_dsar_deadlines",
     "check_data_owner_liveness",
+    "check_closure_guard_wired",
     "check_export_storage",
+    "check_requested_notification_types",
     "check_reregistration_hashes",
     "register_checks",
 ]
@@ -730,11 +741,70 @@ def check_export_storage(app_configs=None, **kwargs):
     return problems
 
 
+CLOSURE_GUARD = "stapel_gdpr.guards.AccountClosureGuardMiddleware"
+
+#: Every notification type this library requests (dsar.py, orchestrator.py, tasks.py).
+REQUESTED_NOTIFICATION_TYPES = (
+    "gdpr.dsar.received",
+    "gdpr.dsar.opened",
+    "gdpr.export_ready",
+    "gdpr.inactivity_warning",
+    "gdpr.inactivity_closed",
+)
+
+
+def check_closure_guard_wired(app_configs=None, **kwargs):
+    """``gdpr.W015`` — the fleet-wide closure guard is not in MIDDLEWARE."""
+    from django.conf import settings
+
+    if CLOSURE_GUARD in list(getattr(settings, "MIDDLEWARE", None) or []):
+        return []
+    return [
+        CheckWarning(
+            "AccountClosureGuardMiddleware is not in MIDDLEWARE: an account "
+            "in its closure grace period or being erased keeps using every "
+            "endpoint outside stapel-gdpr with its existing token.",
+            hint=f'Add "{CLOSURE_GUARD}" to MIDDLEWARE after the '
+                 "authentication middleware.",
+            id="gdpr.W015",
+        )
+    ]
+
+
+def check_requested_notification_types(app_configs=None, **kwargs):
+    """``gdpr.W016`` — a type this library requests is not registered."""
+    from django.apps import apps
+
+    if not apps.is_installed("stapel_notifications"):
+        return []
+    try:
+        from stapel_notifications.routing import registered_types
+    except ImportError:
+        return []
+    known = set(registered_types())
+    missing = [t for t in REQUESTED_NOTIFICATION_TYPES if t not in known]
+    if not missing:
+        return []
+    return [
+        CheckWarning(
+            "stapel-notifications does not register notification type(s) "
+            f"{', '.join(missing)} that stapel-gdpr requests: those letters "
+            "are dropped as unknown, including the statutory DSAR "
+            "acknowledgement.",
+            hint="Upgrade stapel-notifications (the DSAR types ship from "
+                 "0.28.0), or register them in STAPEL_NOTIFICATIONS['TYPES'].",
+            id="gdpr.W016",
+        )
+    ]
+
+
 def register_checks() -> None:
     """Called from ``AppConfig.ready``; idempotent."""
     register(check_data_owner_registry, "gdpr")
     register(check_data_owner_names, "gdpr")
     register(check_export_storage, "gdpr")
+    register(check_closure_guard_wired, "gdpr")
+    register(check_requested_notification_types, "gdpr")
     register(check_reregistration_hashes, "gdpr", "database")
     register(check_data_owner_liveness, "gdpr", "database")
     register(check_dsar_deadlines, "gdpr", "database")

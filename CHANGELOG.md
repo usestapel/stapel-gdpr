@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.0] — 2026-10-22
+
+### Fixed — an acknowledgement that was not queued is not recorded as sent
+
+`request_notification()` reports a failed publish by returning False, not by
+raising, and the DSAR intake stamped `ack_sent_at` and ACKNOWLEDGED either
+way. It now records the acknowledgement only when the request was queued, so
+`gdpr.W008` and `sweep_dsar_deadlines` see the open clock. Both DSAR letters
+also carry `resolve_due_date` (the answer-by date as YYYY-MM-DD), which the
+stapel-notifications 0.28.0 copy reads.
+
+### Added — `gdpr.W015`: the closure guard is not wired
+
+`AccountClosureGuardMiddleware` is host-wired and nothing said when it was
+missing: an account in its closure grace period, or being erased, kept using
+every endpoint outside this library with its existing token. The warning
+names the middleware to add.
+
+### Added — `gdpr.W016`: a requested notification type is not registered
+
+When stapel-notifications is installed in the same process and does not
+register a type this library requests (`gdpr.dsar.received`,
+`gdpr.dsar.opened`, `gdpr.export_ready`, `gdpr.inactivity_warning`,
+`gdpr.inactivity_closed`), the letter is dropped as unknown — the statutory
+DSAR acknowledgement among them. Notifications below 0.28.0 lack the two DSAR
+types. Silent when notifications runs in another service: it cannot be asked
+from here.
+
 ## [0.8.2] — 2026-09-18
 
 ### Fixed — an erasure remembers the address, not the placeholder it wrote
