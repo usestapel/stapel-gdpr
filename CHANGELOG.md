@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.9.1] — 2026-11-04
+
+### Added — `gdpr_redrive_timeouts`: timed-out erasures can be finished
+
+An erasure whose owners were silent past their deadline was parked in TIMEOUT
+for good: `_maybe_finalize` acted only on QUEUED/ERASING, and
+`gdpr_requeue_after_restore` only picks up DELETED requests. For an account
+closure that meant `deleting` forever, with the primary identity already
+erased. `manage.py gdpr_redrive_timeouts` resets the unanswered parts with a
+fresh deadline, re-emits `gdpr.erasure.requested` (and the legacy
+`user.deleted` for an account) under the same correlation id, and finalizes
+the request as soon as the receipts are complete. Idempotent; `--dry-run`
+prints counts only; `--subject-type` and `--limit` narrow a run.
+
+### Fixed — a late receipt that completes a TIMEOUT request finalizes it
+
+A receipt that arrives after the deadline sweep marks its part done; when it
+is the last one the request now flips to DELETED. A partial late receipt
+never finalizes and never takes the `ALLOW_ERASURE_WITHOUT_RECEIPTS` waiver.
+
 ## [0.9.0] — 2026-10-22
 
 ### Fixed — an acknowledgement that was not queued is not recorded as sent

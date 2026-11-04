@@ -10,6 +10,8 @@ import logging
 import shutil
 import uuid as uuid_lib
 import zipfile
+from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Union
 
@@ -39,6 +41,25 @@ logger = logging.getLogger(__name__)
 
 # Framework users have UUID primary keys; str is accepted for convenience.
 UserId = Union[uuid_lib.UUID, str]
+
+
+@dataclass
+class RedrivePlan:
+    """What re-driving one timed-out erasure does (see ``redrive_timed_out``).
+
+    Attributes:
+        request_id: The ErasureRequest re-driven.
+        unanswered: Owners whose part is reset and asked again.
+        failed: Owners that answered "could not erase"; left as they are.
+        undeclared: Unanswered owners the current registry no longer declares
+            — asking again will not reach them.
+        local_retry: The closure's own local erasure is re-entered.
+    """
+    request_id: int
+    unanswered: list = field(default_factory=list)
+    failed: list = field(default_factory=list)
+    undeclared: list = field(default_factory=list)
+    local_retry: bool = False
 
 
 #: Shape a remote-supplied ``bucket_path`` must have before this service will
@@ -911,8 +932,15 @@ class GDPROrchestrator:
         honest — until every claiming owner produced a receipt against a
         registry that is itself sound. The named override is
         ``ALLOW_ERASURE_WITHOUT_RECEIPTS``.
+
+        A TIMEOUT request is still finalizable: a late receipt that completes
+        the set proves the erasure as well as a punctual one does.
         """
-        if request.state not in (ErasureRequest.STATE_QUEUED, ErasureRequest.STATE_ERASING):
+        if request.state not in (
+            ErasureRequest.STATE_QUEUED,
+            ErasureRequest.STATE_ERASING,
+            ErasureRequest.STATE_TIMEOUT,
+        ):
             return
 
         closure = request.closure
@@ -946,6 +974,10 @@ class GDPROrchestrator:
 
         waived = False
         if blockers:
+            if request.state == ErasureRequest.STATE_TIMEOUT:
+                # Already reported by the deadline sweep; re-driving it is
+                # `gdpr_redrive_timeouts`, never a waiver taken on a receipt.
+                return
             if not gdpr_settings.ALLOW_ERASURE_WITHOUT_RECEIPTS:
                 # WAITING is not FAILING, and this line used to say it was.
                 #
@@ -1122,6 +1154,109 @@ class GDPROrchestrator:
                     key=request.correlation_id,
                 )
         return count
+
+    def plan_redrive(self, request: ErasureRequest) -> 'RedrivePlan':
+        """What re-driving one TIMEOUT request would do. Dry-run and apply
+        both count with this, so the two can never disagree."""
+        parts = list(request.parts.all())
+        unanswered = [p for p in parts if p.unanswered]
+        closure = request.closure
+        local_retry = bool(
+            closure is not None
+            and closure.status == AccountClosureRequest.STATUS_DELETING
+            and not (closure.local_erasure_done and closure.identity_erased_at)
+        )
+        registry = data_owner_report()
+        undeclared = [p.owner for p in unanswered if registry.owner(p.owner) is None]
+        return RedrivePlan(
+            request_id=request.pk,
+            unanswered=[p.owner for p in unanswered],
+            failed=[p.owner for p in parts if p.state == ErasurePart.STATE_FAILED],
+            undeclared=undeclared,
+            local_retry=local_retry,
+        )
+
+    def redrive_timed_out(self, request_id: int) -> 'RedrivePlan | None':
+        """Re-open one TIMEOUT erasure and ask its silent owners again.
+
+        Unanswered parts (PENDING or TIMEOUT) go back to PENDING with a fresh
+        deadline, the request goes back to ERASING, and the original
+        ``gdpr.erasure.requested`` is emitted again under the SAME
+        correlation id — owners are idempotent and mint the same receipt id,
+        so a re-drive can never produce a second record of one deletion.
+        Receipts already collected stay. A closure whose local work never
+        completed is re-entered through :meth:`execute_deletion`.
+
+        Returns None when the request is no longer TIMEOUT (another run got
+        there first, or a late receipt finalized it): that is what makes the
+        command idempotent.
+        """
+        from stapel_core.comm import mutate_and_emit
+
+        registry = data_owner_report()
+        default_timeout = timedelta(hours=float(gdpr_settings.OWNER_TIMEOUT_HOURS or 24))
+        now = timezone.now()
+
+        with transaction.atomic():
+            request = (
+                ErasureRequest.objects.select_for_update()
+                .filter(pk=request_id, state=ErasureRequest.STATE_TIMEOUT)
+                .first()
+            )
+            if request is None:
+                return None
+            plan = self.plan_redrive(request)
+            closure = request.closure
+            with mutate_and_emit() as emit:
+                for part in request.parts.filter(
+                    state__in=[ErasurePart.STATE_PENDING, ErasurePart.STATE_TIMEOUT],
+                ):
+                    owner = registry.owner(part.owner)
+                    part.state = ErasurePart.STATE_PENDING
+                    part.deadline = now + (owner.timeout if owner else default_timeout)
+                    part.note = f're-driven {now.isoformat()} after a timeout'
+                    part.save(update_fields=['state', 'deadline', 'note'])
+                request.state = ErasureRequest.STATE_ERASING
+                request.save(update_fields=['state'])
+                if plan.unanswered:
+                    emit(
+                        'gdpr.erasure.requested',
+                        {
+                            'request_id': request.pk,
+                            'correlation_id': request.correlation_id,
+                            'subject_type': request.subject_type,
+                            'subject_key': request.subject_key,
+                            'workspace_id': request.workspace_id or '',
+                            'requested_by': str(request.requested_by) if request.requested_by else '',
+                            'origin': request.origin,
+                            'due_at': request.due_at.isoformat(),
+                        },
+                        key=request.correlation_id,
+                    )
+                    if closure is not None and closure.local_erasure_done:
+                        # Same pair execute_deletion sends: an owner still on
+                        # the legacy account signal is asked the way it was.
+                        emit(
+                            'user.deleted',
+                            {
+                                'user_id': str(closure.user_id),
+                                'correlation_id': request.correlation_id,
+                                'trigger': closure.trigger,
+                            },
+                            key=str(closure.user_id),
+                        )
+
+        logger.info(
+            'GDPR erasure re-driven [request=%s correlation=%s owners=%s]',
+            request.pk, request.correlation_id, plan.unanswered,
+        )
+        request.refresh_from_db()
+        if plan.local_retry:
+            closure.refresh_from_db()
+            self.execute_deletion(closure)
+        else:
+            self._maybe_finalize(request)
+        return plan
 
     # -------------------------------------------------------------------------
     # Owner liveness

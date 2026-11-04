@@ -18,6 +18,7 @@ Stapel ground rules apply: modules never import each other; all cross-module com
 | Data-owner liveness | `probe_data_owners` (daily), `DataOwnerHealth`, `GET owners/health`, `gdpr.W006` | Owners answer `gdpr.owner.alive` from the *same* subscriber that erases, so an answer proves the erasure path is consumed rather than that a container is deployed. A silent owner is named at boot instead of at the first missed deadline |
 | DSAR intake (Art. 12) | `POST/GET dsar`, `PATCH dsar/{id}`, `dsar.create_dsar`, `sweep_dsar_deadlines`, `gdpr.W008` | Authenticated and anonymous-with-captcha intake, automated acknowledgement inside the request (`ack_sent_at` is proof, not an assumption), both statutory clocks, and a wiring step handing erasure to `initiate_closure` and access/portability to `request_export` |
 | Subprocessor ledger | `STAPEL_GDPR["SUBPROCESSORS"]`, `SubprocessorObligation`, `subprocessors.record_subprocessor_obligations`, `ErasureRequest.fully_erased_by` | One row per processor per erasure with the date its contractual window closes, so "erased from our systems on X; from every processor by Y" is two queryable dates |
+| Timed-out erasure re-drive | `manage.py gdpr_redrive_timeouts [--dry-run] [--subject-type T] [--limit N]`, `GDPROrchestrator.redrive_timed_out` | Resets unanswered parts of TIMEOUT requests, re-emits `gdpr.erasure.requested` under the same correlation id, finalizes on the last receipt. Idempotent: only rows still in TIMEOUT, under a row lock. A late receipt that completes a TIMEOUT request also finalizes it |
 | Backup restore re-queue | `manage.py gdpr_requeue_after_restore --restored-from <iso>` | The one operation that silently undoes a completed erasure. Idempotent by construction: the clone FKs its source and `(origin, source_request)` is unique |
 | Legal hold (Art. 17(3)) | `LegalHold` model, `LegalHold.is_held(user_id)`; Django admin | Blocks `initiate_closure` and `execute_deletion`; held users skipped by grace-period worker and retention cleanup |
 | Re-registration detection | `is_reregistration`, `store_hashes`, `compute_hash` (`reregistration.py`), `ReRegistrationHash` model | One purpose-bound keyed HMAC-SHA256 of normalized email/phone, 24-month retention (`RETENTION = 730 days`); hashes captured automatically before erasure. Rows written around `store_hashes` are `scheme='unverified'`, never match, and are reported by `gdpr.E004` |
@@ -109,6 +110,11 @@ to `authorize(request, subject_type, subject_key) -> bool`. The default is
 staff-only and a broken authorizer refuses: only the host knows whether this
 user owns that recording, and an ownership check that fails open is worse than
 none.
+
+**After an owner outage**, erasures the deadline sweep moved to TIMEOUT stay
+there until `manage.py gdpr_redrive_timeouts` asks their silent owners again
+(`--dry-run` prints counts only). Receipts already collected are kept; a run
+on a request that has left TIMEOUT does nothing.
 
 **After a backup restore**, run
 `manage.py gdpr_requeue_after_restore --restored-from <the backup's ISO
