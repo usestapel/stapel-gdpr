@@ -9,54 +9,17 @@ celery task under ``stapel_gdpr.tasks.<name>``; register the schedule::
         ...
     }
 
-Without it every job is an :class:`InlineTask`: ``delay``/``apply_async`` run
-it in the calling process, and the periodic sweeps are run from cron.
+Without it every job is a core :class:`~stapel_core.background.InlineTask`:
+``delay``/``apply_async`` run it in the calling process, and the periodic
+sweeps are run from cron.
 """
-import functools
 import logging
 
 from django.utils import timezone
 
-try:
-    from celery import shared_task as _shared_task
-except ImportError:
-    _shared_task = None
+from stapel_core.background import InlineTask, background_task
 
 logger = logging.getLogger(__name__)
-
-
-class InlineTask:
-    """A job without celery: ``delay``/``apply_async`` call it now.
-
-    Routing and retry options are accepted and ignored — there is no broker.
-    """
-
-    def __init__(self, fn, name: str):
-        functools.update_wrapper(self, fn)
-        self.run = fn
-        self.name = name
-
-    def __call__(self, *args, **kwargs):
-        return self.run(*args, **kwargs)
-
-    def delay(self, *args, **kwargs):
-        return self.run(*args, **kwargs)
-
-    def apply_async(self, args=None, kwargs=None, **options):
-        return self.run(*(args or ()), **(kwargs or {}))
-
-
-def _task(fn=None, **options):
-    """``shared_task(name=stapel_gdpr.tasks.<fn>, **options)`` with celery,
-    :class:`InlineTask` without it."""
-
-    def decorate(fn):
-        name = f"{__name__}.{fn.__name__}"
-        if _shared_task is not None:
-            return _shared_task(name=name, **options)(fn)
-        return InlineTask(fn, name)
-
-    return decorate(fn) if fn is not None else decorate
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +31,8 @@ def _run_data_export(request_id: int) -> None:
     gdpr_orchestrator.run_export(request_id)
 
 
-def run_data_export(request_id: int) -> None:
+@background_task(bind=True, max_retries=3, default_retry_delay=300)
+def run_data_export(self, request_id: int) -> None:
     """Generate export archive for a single request (monolith mode).
 
     With celery a failure is retried (3 times, 300 s apart). Inline there is
@@ -79,25 +43,12 @@ def run_data_export(request_id: int) -> None:
         _run_data_export(request_id)
     except Exception as e:
         logger.error('run_data_export failed [request=%s]: %s', request_id, e)
-
-
-def _run_data_export_retrying(self, request_id: int) -> None:
-    try:
-        _run_data_export(request_id)
-    except Exception as e:
-        logger.error('run_data_export failed [request=%s]: %s', request_id, e)
+        if isinstance(self, InlineTask):
+            return
         raise self.retry(exc=e)
 
 
-if _shared_task is not None:
-    run_data_export = _shared_task(  # noqa: F811 - the celery face of the job above
-        name=f"{__name__}.run_data_export", bind=True, max_retries=3, default_retry_delay=300,
-    )(_run_data_export_retrying)
-else:
-    run_data_export = InlineTask(run_data_export, f"{__name__}.run_data_export")  # noqa: F811
-
-
-@_task
+@background_task()
 def sweep_pending_exports():
     """Assemble partial archives for export requests that have exceeded their 24h deadline.
 
@@ -132,7 +83,7 @@ def expire_export(req) -> None:
     )
 
 
-@_task
+@background_task()
 def purge_expired_exports() -> int:
     """Delete export archives whose download window closed. Returns the count.
 
@@ -167,7 +118,7 @@ def purge_expired_exports() -> int:
     return purged
 
 
-@_task
+@background_task()
 def sweep_deletion_deadlines() -> int:
     """Time out erasure parts whose owner never confirmed. Returns the count.
 
@@ -181,7 +132,7 @@ def sweep_deletion_deadlines() -> int:
     return gdpr_orchestrator.sweep_deletion_deadlines()
 
 
-@_task
+@background_task()
 def probe_data_owners() -> str:
     """Ask every declared data owner to prove its erasure path is consumed.
 
@@ -200,7 +151,7 @@ def probe_data_owners() -> str:
 # DSAR deadlines
 # ---------------------------------------------------------------------------
 
-@_task
+@background_task()
 def sweep_dsar_deadlines() -> int:
     """Emit ``gdpr.dsar.overdue`` for every missed DSAR clock. Returns the count.
 
@@ -269,7 +220,7 @@ def sweep_dsar_deadlines() -> int:
 # Account closure worker
 # ---------------------------------------------------------------------------
 
-@_task
+@background_task()
 def process_expired_grace_periods():
     """Execute deletion for accounts whose 30-day grace period has elapsed.
 
@@ -298,7 +249,7 @@ def process_expired_grace_periods():
 # Inactivity checker
 # ---------------------------------------------------------------------------
 
-@_task
+@background_task()
 def check_inactive_accounts():
     """
     Detect accounts inactive for 12 months.
@@ -369,7 +320,7 @@ def _send_inactivity_closed_email(user):
 # Retention cleanup
 # ---------------------------------------------------------------------------
 
-@_task
+@background_task()
 def run_retention_cleanup():
     """Delete data that has exceeded its legal retention period.
 

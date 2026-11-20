@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.3] — 2026-11-20
+
+Patch. No migration.
+
+### Changed — the celery-optional shim is core's
+
+- Jobs are declared with `stapel_core.background.background_task`; the
+  package's own `InlineTask`/`_task` copy is gone and `run_data_export` is
+  one function with both faces (celery retries 3 x 300 s; inline logs the
+  failure and leaves the request to `sweep_pending_exports`).
+  `stapel_gdpr.tasks.InlineTask` stays importable (re-exported from core).
+  Task names are unchanged. Requires `stapel-core>=0.99.3`.
+
 ## [0.9.2] — 2026-11-20
 
 Patch. No migration. Requires stapel-core 0.99.2. A host that runs celery
