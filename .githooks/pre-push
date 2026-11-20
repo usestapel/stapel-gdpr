@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# stapel-hooks: pre-push v3
 # Scan WHAT IS BEING PUSHED, never the working tree: git names each ref on
 # stdin, and the committed tree behind it is the only thing this push can
 # publish. Scanning "." made two sessions sharing one worktree block each
@@ -9,10 +10,108 @@ zero='0000000000000000000000000000000000000000'
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# git passes the remote name as $1 and its URL as $2.
+remote_name="${1:-origin}"
+default_branch=''
+default_sha=''
+default_fetched=0
+
 while read -r local_ref local_sha remote_ref remote_sha; do
     # nothing to push, or a deletion: no tree to judge
     if [ -z "$local_sha" ] || [ "$local_sha" = "$zero" ]; then
         continue
+    fi
+
+    # ── Stage 1 — branch-contains-default ────────────────────────────────
+    # A branch cut from a base hundreds of commits old does not revert
+    # anything while it sits on a laptop; it reverts everything that landed
+    # on the default branch in the meantime the moment it is merged, and
+    # nothing about that merge looks wrong. So the push is the last honest
+    # moment to ask the question: refuse until the default branch has been
+    # MERGED into the branch and the conflicts resolved by the person who
+    # knows both sides. Rebasing a published branch is not the fix — it
+    # rewrites history other clones already have and still drops nothing
+    # into the conflict resolution.
+    #
+    # Skipped for tags, for deletions, and for pushes whose REMOTE ref is
+    # the default branch itself (git already enforces fast-forward there).
+    # There is no environment-variable escape hatch, by design.
+    #
+    # POSIX sh only in this stage (no bashisms, no GNU-only flags): it is
+    # copied by hand into hooks that run under Git for Windows' sh.
+    check_contains=1
+    case "$local_ref" in
+        refs/tags/*) check_contains=0 ;;
+    esac
+    if [ "$check_contains" -eq 1 ] && [ -z "$default_branch" ]; then
+        default_branch="$(git symbolic-ref --short "refs/remotes/$remote_name/HEAD" 2>/dev/null || true)"
+        default_branch="${default_branch#$remote_name/}"
+        if [ -z "$default_branch" ]; then
+            # origin/HEAD is unset in plenty of real clones. Fall back to
+            # main, then master, rather than guessing from the current branch.
+            if git rev-parse --verify --quiet "refs/remotes/$remote_name/main" >/dev/null 2>&1 \
+               || git rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1; then
+                default_branch='main'
+            elif git rev-parse --verify --quiet "refs/remotes/$remote_name/master" >/dev/null 2>&1 \
+                 || git rev-parse --verify --quiet refs/heads/master >/dev/null 2>&1; then
+                default_branch='master'
+            else
+                default_branch='main'
+            fi
+        fi
+    fi
+    if [ "$check_contains" -eq 1 ] && [ "$remote_ref" = "refs/heads/$default_branch" ]; then
+        check_contains=0
+    fi
+    if [ "$check_contains" -eq 1 ]; then
+        if [ "$default_fetched" -eq 0 ]; then
+            default_fetched=1
+            # Hard 20s watchdog. `timeout(1)` is coreutils and is on neither
+            # stock macOS nor Git for Windows, so this is plain job control:
+            # both subshells redirect their own fds so a caller capturing the
+            # hook's output through a pipe cannot block on a lingering child,
+            # and </dev/null keeps the fetch from eating the ref list this
+            # loop is reading from stdin.
+            ( git fetch --quiet "$remote_name" "$default_branch" </dev/null >/dev/null 2>&1 ) >/dev/null 2>&1 &
+            fetch_pid=$!
+            ( sleep 20; kill "$fetch_pid" >/dev/null 2>&1 ) >/dev/null 2>&1 &
+            fetch_watchdog=$!
+            if wait "$fetch_pid" 2>/dev/null; then
+                default_sha="$(git rev-parse --verify --quiet FETCH_HEAD 2>/dev/null || true)"
+                if [ -z "$default_sha" ]; then
+                    default_sha="$(git rev-parse --verify --quiet "refs/remotes/$remote_name/$default_branch" 2>/dev/null || true)"
+                fi
+            fi
+            kill "$fetch_watchdog" >/dev/null 2>&1 || true
+            wait "$fetch_watchdog" 2>/dev/null || true
+        fi
+        if [ -z "$default_sha" ]; then
+            echo ""
+            echo "REFUSING to push $local_ref: the freshness of"
+            echo "$remote_name/$default_branch could not be verified —"
+            echo "'git fetch $remote_name $default_branch' failed or timed out (20s)."
+            echo "This gate fails closed on purpose: an unchecked branch is not"
+            echo "pushable, and a push would not work without that network anyway."
+            exit 1
+        fi
+        if ! git merge-base --is-ancestor "$default_sha" "$local_sha"; then
+            behind="$(git rev-list --count "$local_sha..$default_sha" 2>/dev/null || echo '?')"
+            echo ""
+            echo "REFUSING to push $local_ref: this branch does not contain"
+            echo "$remote_name/$default_branch — it is $behind commit(s) behind it."
+            echo "Merging it as it stands would silently revert those commits."
+            echo ""
+            echo "Merge the default branch into your branch, here, now:"
+            echo "  git fetch $remote_name"
+            echo "  git merge $remote_name/$default_branch"
+            echo "  # resolve the conflicts, then: git add <files> && git commit"
+            echo "  git push"
+            echo ""
+            echo "Rebasing a published branch is NOT the fix, and neither is"
+            echo "--no-verify: both hide the revert instead of resolving it."
+            exit 1
+        fi
+        echo "Branch contains $remote_name/$default_branch."
     fi
 
     echo "Running ruff lint check on ${local_sha:0:12}..."
@@ -27,11 +126,89 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # commit message (stapel-exposure-lint EXP001/EXP002; the list is
     # ~/.stapel/private-names, outside every repo). Skipped where the tool is
     # not on PATH — a checkout without stapel-tools is not the owner's.
+    # --strict: a list that resolves to zero names (EXP000) or a tree the
+    # lint cannot classify (EXP003) refuses the push — a new machine once
+    # pushed through this stage having checked nothing.
     if command -v stapel-exposure-lint >/dev/null 2>&1; then
         if [ -z "$remote_sha" ] || [ "$remote_sha" = "$zero" ]; then
-            stapel-exposure-lint --pushed "$local_sha"
+            stapel-exposure-lint --strict --pushed "$local_sha"
         else
-            stapel-exposure-lint --pushed "$local_sha" --remote "$remote_sha"
+            stapel-exposure-lint --strict --pushed "$local_sha" --remote "$remote_sha"
         fi
     fi
+
+    # A RELEASE TAG may not be cut over stale contract artifacts.
+    #
+    # CI already refuses to publish one — the drift tests fail and the
+    # publish workflow's ci-gate waits on a green CI run for the tagged
+    # commit, which is what stopped stapel-gdpr 0.7.3 and stapel-profiles
+    # 0.20.5 from ever reaching PyPI. That half works. What it does not do is
+    # stop the TAG, so the tag lands, CI goes red, and the version number is
+    # burned: two were burned in one night that way, each needing a re-cut
+    # under a new number with a changelog entry explaining the hole.
+    #
+    # This is the cheap half — it costs a `make contract-check` on a tag push
+    # and nothing at all on a branch push. The expensive half stays in CI,
+    # because only CI can prove the artifacts regenerate on a clean checkout
+    # with the pinned toolchain rather than on whatever this laptop has.
+    case "$local_ref" in
+        refs/tags/v*)
+            # `make contract-check` regenerates into a temp dir and compares
+            # with the artifacts ON DISK. That is only a check of the TAG when
+            # the disk matches the tag. Twice in one night it did not: the
+            # disk was right, `make contract` had just run, and the COMMIT was
+            # stale because the pathspec `git add` named one file and `make
+            # contract` writes four. Both tags went out green here, went red
+            # in CI on drift, and burned a version number each.
+            #
+            # So ask the cheap question first. Tracked content only —
+            # scratch files are not drift, and an untracked file that would
+            # change what the artifacts emit is not in the tag either.
+            if ! git diff --quiet "$local_sha" --; then
+                echo ""
+                echo "REFUSING to push ${local_ref#refs/tags/}: the working tree"
+                echo "does not match the commit this tag points at, so nothing"
+                echo "checked here would be a check of the TAG. Files that differ:"
+                git diff --name-only "$local_sha" -- | sed 's/^/  /'
+                echo ""
+                echo "Commit them (or stash them), move the tag, and push again."
+                exit 1
+            fi
+            if [ -f Makefile ] && grep -q '^contract-check:' Makefile; then
+                # The project's interpreter, not whatever `python3` PATH
+                # offers: the check imports the package, and a bare system
+                # interpreter refuses every tag for a reason that is not drift.
+                # First that imports the package wins: $STAPEL_PYTHON, the
+                # active venv, ./.venv, ./venv, then python3 on PATH.
+                package="$(sed -n 's/^name *= *"//p' pyproject.toml 2>/dev/null | head -n 1 | sed 's/".*//' | tr '-' '_' || true)"
+                project_python=''
+                for candidate in "${STAPEL_PYTHON:-}" "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" .venv/bin/python venv/bin/python python3; do
+                    [ -n "$candidate" ] || continue
+                    command -v "$candidate" >/dev/null 2>&1 || continue
+                    if [ -z "$package" ] || "$candidate" -c "import $package" >/dev/null 2>&1; then
+                        project_python="$candidate"
+                        break
+                    fi
+                done
+                if [ -z "$project_python" ]; then
+                    echo ""
+                    echo "REFUSING to push ${local_ref#refs/tags/}: no interpreter here"
+                    echo "imports '$package', so the contract check cannot run."
+                    echo "Activate the project's venv, or point STAPEL_PYTHON at its python:"
+                    echo "  STAPEL_PYTHON=/path/to/venv/bin/python git push origin ${local_ref#refs/tags/}"
+                    exit 1
+                fi
+                echo "Release tag ${local_ref#refs/tags/}: checking contract artifacts with $project_python..."
+                if ! make contract-check PYTHON="$project_python"; then
+                    echo ""
+                    echo "REFUSING to push ${local_ref#refs/tags/}: the committed"
+                    echo "contract artifacts do not match what this code emits."
+                    echo "CI would fail this tag and the version number would be"
+                    echo "burned. Run 'make contract', commit the result, move the"
+                    echo "tag, and push again."
+                    exit 1
+                fi
+            fi
+            ;;
+    esac
 done
