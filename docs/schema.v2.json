@@ -757,6 +757,9 @@
           },
           {
             "JWTBearerAuth": []
+          },
+          {
+            "ClosureTokenAuth": []
           }
         ],
         "responses": {
@@ -932,6 +935,9 @@
           },
           {
             "JWTBearerAuth": []
+          },
+          {
+            "ClosureTokenAuth": []
           }
         ],
         "responses": {
@@ -1825,6 +1831,12 @@
       }
     },
     "securitySchemes": {
+      "ClosureTokenAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Closure-Token",
+        "description": "The `closure_token` returned with the closure's 202, standing in for the session that closure revoked. Scoped to that one closure and expiring with its grace period."
+      },
       "JWTBearerAuth": {
         "type": "http",
         "scheme": "bearer",

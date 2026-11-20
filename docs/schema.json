@@ -634,7 +634,9 @@
           {
             "JWTCookieAuth": []
           },
-          {}
+          {
+            "ClosureTokenAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -769,7 +771,9 @@
           {
             "JWTCookieAuth": []
           },
-          {}
+          {
+            "ClosureTokenAuth": []
+          }
         ],
         "responses": {
           "200": {
@@ -1586,6 +1590,12 @@
       }
     },
     "securitySchemes": {
+      "ClosureTokenAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Closure-Token",
+        "description": "The `closure_token` returned with the closure's 202, standing in for the session that closure revoked. Scoped to that one closure and expiring with its grace period."
+      },
       "JWTCookieAuth": {
         "type": "apiKey",
         "in": "cookie",

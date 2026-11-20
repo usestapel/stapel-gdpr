@@ -25,6 +25,7 @@ from stapel_core.django.api.permissions import (
     IsServiceRequest,
 )
 from stapel_core.django.captcha import captcha_protected
+from stapel_core.django.openapi.contract import Credential, accepts_credentials
 from stapel_core.django.openapi.schemas import StapelErrorSerializer
 
 from . import export_store
@@ -348,11 +349,24 @@ class DataExportDownloadView(GDPRAPIView):
 # =============================================================================
 
 
-#: The token as the generated clients see it. Declared as a real parameter, not
-#: only in prose: the security block can only say "anonymous or JWT" here (a
-#: per-lib emitter runs on unset SPECTACULAR_SETTINGS by fleet convention, so it
-#: cannot append a securityScheme component), and a caller that cannot see the
-#: header has no way to use the capability the 202 handed it.
+#: The token as a security alternative: the session OR this header. Neither is
+#: a 401, so the operations are not open to a caller holding nothing.
+CLOSURE_TOKEN_CREDENTIAL = Credential(
+    "ClosureTokenAuth",
+    {
+        "type": "apiKey",
+        "in": "header",
+        "name": CLOSURE_TOKEN_HEADER,
+        "description": (
+            "The `closure_token` returned with the closure's 202, standing in "
+            "for the session that closure revoked. Scoped to that one closure "
+            "and expiring with its grace period."
+        ),
+    },
+)
+
+#: The same header as a parameter, which clients generated before the security
+#: alternative existed read to send it.
 CLOSURE_TOKEN_PARAMETER = OpenApiParameter(
     name=CLOSURE_TOKEN_HEADER,
     type=OpenApiTypes.STR,
@@ -547,6 +561,7 @@ class AccountCancelCloseView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
+    @accepts_credentials(CLOSURE_TOKEN_CREDENTIAL)
     def post(self, request: Request):  # noqa: R007
         closure, error = _closure_from_token(request)
         if error is not None:
@@ -603,6 +618,7 @@ class AccountCloseStatusView(GDPRAPIView):
         },
         tags=["GDPR"],
     )
+    @accepts_credentials(CLOSURE_TOKEN_CREDENTIAL)
     def get(self, request: Request):  # noqa: R007
         closure, error = _closure_from_token(request)
         if error is not None:

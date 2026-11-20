@@ -216,6 +216,24 @@ def test_protected_paths_carry_jwt_security():
     assert not missing, f"operations missing JWTCookieAuth security: {missing}"
 
 
+@pytest.mark.parametrize("name", ["schema.json", "schema.v2.json"])
+@pytest.mark.parametrize("method,path", [
+    ("get", "/gdpr/api/v1/user/account/close/status"),
+    ("post", "/gdpr/api/v1/user/account/cancel-close"),
+])
+def test_the_closure_token_is_a_credential_and_nothing_is_not(name, method, path):
+    """A session OR the X-Closure-Token, never neither (that is a 401): the
+    token is a declared security alternative a generated client can send, and
+    there is no anonymous ``{}`` alternative."""
+    doc = json.loads((DOCS / name).read_text())
+    scheme = doc["components"]["securitySchemes"]["ClosureTokenAuth"]
+    assert (scheme["type"], scheme["in"], scheme["name"]) == ("apiKey", "header", "X-Closure-Token")
+    security = doc["paths"][path][method]["security"]
+    assert {"ClosureTokenAuth": []} in security
+    assert {"JWTCookieAuth": []} in security
+    assert {} not in security
+
+
 def test_errors_json_agrees_with_the_standalone_gate():
     """``tests/test_error_keys.py`` regenerates docs/errors.json by calling
     ``generate_error_keys`` inside the SUITE's Django instance; the harness

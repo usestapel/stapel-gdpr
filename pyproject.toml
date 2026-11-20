@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-gdpr"
-version = "0.9.3"
+version = "0.9.4"
 description = "GDPR data export and account deletion Django app for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -33,7 +33,7 @@ dependencies = [
     # consuming service keeps. 0.79.0 introduced it; 0.80.1 is the first
     # version that boots, because 0.79.0 registered the mirror as a data owner
     # without a user.merged handler and lifecycle.E001 refuses that.
-    "stapel-core>=0.99.3,<1.0",
+    "stapel-core>=0.99.5,<1.0",
 ]
 
 [project.urls]

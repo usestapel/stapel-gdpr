@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.4] — 2026-11-20
+
+Patch. No migration. Requires stapel-core >= 0.99.5.
+
+### Fixed — the closure token is a declared credential
+
+- `GET user/account/close/status` and `POST user/account/cancel-close` accept a
+  session OR the `X-Closure-Token` the closure's 202 returned; neither is a
+  401. The schema said "session only" (profile 2) or "session or anonymous"
+  (profile 1), so a generated client could not know the token authenticates,
+  and the anonymous token poll looked like an unauthenticated read. Both now
+  declare a `ClosureTokenAuth` apiKey scheme (header `X-Closure-Token`) as an
+  alternative to the session, with no anonymous alternative
+  (`core.accepts_credentials`). The header parameter stays for clients
+  generated before.
+
 ## [0.9.3] — 2026-11-20
 
 Patch. No migration.
