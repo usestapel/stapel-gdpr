@@ -1,37 +1,103 @@
 """
 CRON workers for GDPR processing.
 
-Register in Django settings:
+Celery is optional (the ``celery`` extra). With it installed every job is a
+celery task under ``stapel_gdpr.tasks.<name>``; register the schedule::
+
     CELERY_BEAT_SCHEDULE = {
         **get_gdpr_beat_schedule(),
         ...
     }
+
+Without it every job is an :class:`InlineTask`: ``delay``/``apply_async`` run
+it in the calling process, and the periodic sweeps are run from cron.
 """
+import functools
 import logging
 
-from celery import shared_task
-from celery.schedules import crontab
 from django.utils import timezone
 
+try:
+    from celery import shared_task as _shared_task
+except ImportError:
+    _shared_task = None
+
 logger = logging.getLogger(__name__)
+
+
+class InlineTask:
+    """A job without celery: ``delay``/``apply_async`` call it now.
+
+    Routing and retry options are accepted and ignored — there is no broker.
+    """
+
+    def __init__(self, fn, name: str):
+        functools.update_wrapper(self, fn)
+        self.run = fn
+        self.name = name
+
+    def __call__(self, *args, **kwargs):
+        return self.run(*args, **kwargs)
+
+    def delay(self, *args, **kwargs):
+        return self.run(*args, **kwargs)
+
+    def apply_async(self, args=None, kwargs=None, **options):
+        return self.run(*(args or ()), **(kwargs or {}))
+
+
+def _task(fn=None, **options):
+    """``shared_task(name=stapel_gdpr.tasks.<fn>, **options)`` with celery,
+    :class:`InlineTask` without it."""
+
+    def decorate(fn):
+        name = f"{__name__}.{fn.__name__}"
+        if _shared_task is not None:
+            return _shared_task(name=name, **options)(fn)
+        return InlineTask(fn, name)
+
+    return decorate(fn) if fn is not None else decorate
 
 
 # ---------------------------------------------------------------------------
 # Data export
 # ---------------------------------------------------------------------------
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=300)
-def run_data_export(self, request_id: int):
-    """Generate export archive for a single request (monolith mode)."""
+def _run_data_export(request_id: int) -> None:
     from .orchestrator import gdpr_orchestrator
+    gdpr_orchestrator.run_export(request_id)
+
+
+def run_data_export(request_id: int) -> None:
+    """Generate export archive for a single request (monolith mode).
+
+    With celery a failure is retried (3 times, 300 s apart). Inline there is
+    no retry ladder: the failure is logged and the request stays pending for
+    ``sweep_pending_exports``, which assembles it at the deadline.
+    """
     try:
-        gdpr_orchestrator.run_export(request_id)
+        _run_data_export(request_id)
+    except Exception as e:
+        logger.error('run_data_export failed [request=%s]: %s', request_id, e)
+
+
+def _run_data_export_retrying(self, request_id: int) -> None:
+    try:
+        _run_data_export(request_id)
     except Exception as e:
         logger.error('run_data_export failed [request=%s]: %s', request_id, e)
         raise self.retry(exc=e)
 
 
-@shared_task
+if _shared_task is not None:
+    run_data_export = _shared_task(  # noqa: F811 - the celery face of the job above
+        name=f"{__name__}.run_data_export", bind=True, max_retries=3, default_retry_delay=300,
+    )(_run_data_export_retrying)
+else:
+    run_data_export = InlineTask(run_data_export, f"{__name__}.run_data_export")  # noqa: F811
+
+
+@_task
 def sweep_pending_exports():
     """Assemble partial archives for export requests that have exceeded their 24h deadline.
 
@@ -66,7 +132,7 @@ def expire_export(req) -> None:
     )
 
 
-@shared_task
+@_task
 def purge_expired_exports() -> int:
     """Delete export archives whose download window closed. Returns the count.
 
@@ -101,7 +167,7 @@ def purge_expired_exports() -> int:
     return purged
 
 
-@shared_task
+@_task
 def sweep_deletion_deadlines() -> int:
     """Time out erasure parts whose owner never confirmed. Returns the count.
 
@@ -115,7 +181,7 @@ def sweep_deletion_deadlines() -> int:
     return gdpr_orchestrator.sweep_deletion_deadlines()
 
 
-@shared_task
+@_task
 def probe_data_owners() -> str:
     """Ask every declared data owner to prove its erasure path is consumed.
 
@@ -134,7 +200,7 @@ def probe_data_owners() -> str:
 # DSAR deadlines
 # ---------------------------------------------------------------------------
 
-@shared_task
+@_task
 def sweep_dsar_deadlines() -> int:
     """Emit ``gdpr.dsar.overdue`` for every missed DSAR clock. Returns the count.
 
@@ -203,7 +269,7 @@ def sweep_dsar_deadlines() -> int:
 # Account closure worker
 # ---------------------------------------------------------------------------
 
-@shared_task
+@_task
 def process_expired_grace_periods():
     """Execute deletion for accounts whose 30-day grace period has elapsed.
 
@@ -232,7 +298,7 @@ def process_expired_grace_periods():
 # Inactivity checker
 # ---------------------------------------------------------------------------
 
-@shared_task
+@_task
 def check_inactive_accounts():
     """
     Detect accounts inactive for 12 months.
@@ -303,7 +369,7 @@ def _send_inactivity_closed_email(user):
 # Retention cleanup
 # ---------------------------------------------------------------------------
 
-@shared_task
+@_task
 def run_retention_cleanup():
     """Delete data that has exceeded its legal retention period.
 
@@ -333,7 +399,15 @@ def run_retention_cleanup():
 # ---------------------------------------------------------------------------
 
 def get_gdpr_beat_schedule() -> dict:
-    """Add to CELERY_BEAT_SCHEDULE in your Django settings."""
+    """Add to CELERY_BEAT_SCHEDULE in your Django settings (needs celery)."""
+    try:
+        from celery.schedules import crontab
+    except ImportError as exc:
+        raise ImportError(
+            "get_gdpr_beat_schedule() builds celery crontab entries and needs "
+            "celery installed. Without celery, run the stapel_gdpr.tasks sweeps "
+            "from cron."
+        ) from exc
     return {
         'gdpr-export-deadline-sweep': {
             'task': 'stapel_gdpr.tasks.sweep_pending_exports',

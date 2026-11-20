@@ -48,7 +48,7 @@ jobs:
 
       - name: migration-lint (expand/contract gate, release-management.md §3)
         run: |
-          pip install stapel-tools --quiet
+          pip install "stapel-tools>=0.84.0,<1" --quiet
           stapel-migration-lint . --strict
 
       - name: Import check
@@ -57,7 +57,7 @@ jobs:
       - name: Install test dependencies
         # stapel-translate carries the builtin corpus every owned error string seeds
         # from; tests/test_error_i18n.py divides its coverage gate by it.
-        run: pip install pytest pytest-django pytest-cov stapel-translate
+        run: pip install pytest pytest-django pytest-cov stapel-translate celery "stapel-tools>=0.84.0,<1"
 
       - name: Tests with coverage
         run: |
@@ -131,7 +131,7 @@ jobs:
 
       - name: migration-lint (expand/contract gate, release-management.md §3)
         run: |
-          pip install stapel-tools --quiet
+          pip install "stapel-tools>=0.84.0,<1" --quiet
           stapel-migration-lint . --strict
 
       - name: Import check
@@ -140,7 +140,7 @@ jobs:
       - name: Install test dependencies
         # stapel-translate carries the builtin corpus every owned error string seeds
         # from; tests/test_error_i18n.py divides its coverage gate by it.
-        run: pip install pytest pytest-django pytest-cov stapel-translate
+        run: pip install pytest pytest-django pytest-cov stapel-translate celery "stapel-tools>=0.84.0,<1"
 
       - name: Tests with coverage
         run: |

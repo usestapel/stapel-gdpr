@@ -1,8 +1,8 @@
-# stapel-gdpr 0.9.1
+# stapel-gdpr 0.9.2
 
 GDPR compliance: staged async data export (Art. 15/20) with status polling and download; subject-scoped erasure (Art. 17) — account, workspace, meeting, recording, document, file — each proven by one receipt per data owner that claims the subject type, with a purge SLA, timeout sweep and a subprocessor ledger behind `fully_erased_by`; account closure keeps its cancellable 30-day grace and produces an ErasureRequest at grace end; DSAR intake (Art. 12) with automated acknowledgement and both statutory clocks; data-owner liveness probing; inactivity closure, retention cleanup, LegalHold and ReRegistrationHash; orchestrated through an in-process GDPRProvider registry (stapel_core.gdpr.gdpr_registry) plus comm confirmation (gdpr.section.erased) for remote owners.
 
-Contract: axes 3 · surface 18 · extension points 4 · operations 15 · error codes 60.
+Contract: axes 3 · surface 18 · extension points 4 · operations 15 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -94,7 +94,7 @@ Paths are relative to `/gdpr/api/v1/`.
 - POST /user/data-export/request — gdpr_api_v1_user_data_export_request_create
 - GET /user/data-export/status — gdpr_api_v1_user_data_export_status_retrieve
 
-## Error codes (60) — the StapelError envelope
+## Error codes (61) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -114,6 +114,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.gdpr.unknown_dsar_kind [400] fix_input
 - error.400.gdpr.unknown_subject_type [400] fix_input
 - error.400.invalid_ad_id [400] fix_input
+- error.400.too_many_ids [400] fix_input {requested,limit}
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify
 - error.400.verification_invalid_factor [400] verify
@@ -151,7 +152,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.423.locked [423] wait_and_retry
 - error.423.verification_locked [423] wait_and_retry
 - error.425.gdpr.export_not_ready [425] retry
-- error.429.rate_limit [429] wait_and_retry {retry_after_minutes}
+- error.429.rate_limit [429] wait_and_retry {retry_after_display,retry_after,retry_after_minutes}
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support
 - error.503.gdpr.closure_unavailable [503] retry

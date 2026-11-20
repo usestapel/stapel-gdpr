@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.2] — 2026-11-20
+
+Patch. No migration. Requires stapel-core 0.99.2. A host that runs celery
+workers or `get_gdpr_beat_schedule()` installs `stapel-gdpr[celery]` (or keeps
+celery in its own requirements, as every worker host already does).
+
+- **Celery is optional.** `tasks.py` imported it at module level and the
+  package declared `celery>=5.3` for that import. With celery installed every
+  job is a celery task under its previous name (`run_data_export` keeps its
+  retry ladder); without it each is an `InlineTask` run in the calling
+  process, and a failed inline export is logged and left pending for
+  `sweep_pending_exports`. New `celery` extra (in `all`).
+  `tests/test_celery_optional.py` imports every job with celery unimportable.
+- **Contract profile 2:** `docs/schema.v2.json` beside the unchanged-profile
+  `docs/schema.json`; `errors.json` under stapel-core 0.99, the
+  committed-shape test accepts `param_types`.
+- Gates: `tests/test_contract_profile2.py` on stapel-tools 0.84.0's
+  `contract_gates`; CI installs celery and stapel-tools>=0.84.0 for the suite.
+
 ## [0.9.1] — 2026-11-04
 
 ### Added — `gdpr_redrive_timeouts`: timed-out erasures can be finished

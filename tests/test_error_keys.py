@@ -61,7 +61,8 @@ def test_committed_artifact_shape():
     assert codes == sorted(codes), "entries must be sorted by code"
     assert len(codes) == len(set(codes)), "codes must be unique"
     for e in entries:
-        assert set(e) == {"code", "status", "params", "remediation", "en", "owner"}
+        assert set(e) - {"param_types"} == {"code", "status", "params", "remediation", "en", "owner"}
+        assert set(e.get("param_types", {})) <= set(e["params"])
         assert e["code"].startswith("error.")
         assert e["status"] == int(e["code"].split(".")[1])
         assert isinstance(e["params"], list)

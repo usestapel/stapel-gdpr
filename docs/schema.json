@@ -409,6 +409,8 @@
                       "outcome": "incomplete",
                       "completed_at": "2026-08-24T09:12:00Z",
                       "grace_ends_at": "2026-09-23T09:00:00Z",
+                      "parts": [],
+                      "obligations": [],
                       "unreceipted_owners": [
                         "media"
                       ],
@@ -544,6 +546,8 @@
                         "outcome": "incomplete",
                         "completed_at": "2026-08-24T09:12:00Z",
                         "grace_ends_at": "2026-09-23T09:00:00Z",
+                        "parts": [],
+                        "obligations": [],
                         "unreceipted_owners": [
                           "media"
                         ],
@@ -589,12 +593,14 @@
                     "value": [
                       {
                         "owner": "workspaces",
+                        "alive": false,
                         "last_alive_at": "2026-08-20T05:00:00Z",
                         "last_probe_at": "2026-08-24T05:00:00Z",
                         "declared_subject_types": [
                           "account",
                           "workspace"
-                        ]
+                        ],
+                        "answered_subject_types": []
                       }
                     ]
                   }
@@ -973,6 +979,7 @@
                       "parts_total": 5,
                       "download_available": true,
                       "expires_at": "2026-07-01T12:00:00Z",
+                      "is_partial": false,
                       "missing_services": [
                         "recordings"
                       ]
@@ -1032,7 +1039,8 @@
           },
           "alive": {
             "type": "boolean",
-            "description": "Whether it answered within OWNER_ALIVE_MAX_AGE_HOURS"
+            "description": "Whether it answered within OWNER_ALIVE_MAX_AGE_HOURS",
+            "example": false
           },
           "last_alive_at": {
             "type": "string",
@@ -1062,7 +1070,8 @@
             "items": {
               "type": "string"
             },
-            "description": "Subjects it says it holds"
+            "description": "Subjects it says it holds",
+            "example": []
           }
         },
         "required": [
@@ -1187,7 +1196,8 @@
           },
           "unanswered": {
             "type": "boolean",
-            "description": "Whether this owner never answered at all — still waiting, or timed out in silence. A failed part answered; this one did not"
+            "description": "Whether this owner never answered at all — still waiting, or timed out in silence. A failed part answered; this one did not",
+            "example": false
           }
         },
         "required": [
@@ -1268,14 +1278,16 @@
             "items": {
               "$ref": "#/components/schemas/ErasurePartDTO"
             },
-            "description": "Per-owner receipts"
+            "description": "Per-owner receipts",
+            "example": []
           },
           "obligations": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SubprocessorObligationDTO"
             },
-            "description": "Per-processor deletion windows"
+            "description": "Per-processor deletion windows",
+            "example": []
           },
           "unreceipted_owners": {
             "type": "array",
@@ -1373,7 +1385,8 @@
           },
           "is_partial": {
             "type": "boolean",
-            "description": "Whether sections are missing from the archive"
+            "description": "Whether sections are missing from the archive",
+            "example": false
           },
           "missing_services": {
             "type": "array",

@@ -129,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     paths = emit_schema(out / "schema.json")
+    # Profile 2 goes to its own file: docs/schema.json is what stapel-react's
+    # generators read, and stays profile 1.
+    emit_schema(out / "schema.v2.json", contract_profile=2)
     flows = emit_flows(out / "flows.json")
     errors = emit_errors(out / "errors.json")
 

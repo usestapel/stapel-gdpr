@@ -57,7 +57,7 @@ from stapel_tools.llms_txt import load_inputs, render  # noqa: E402
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / "docs"
 COMMITTED = DOCS / "llms.txt"
-TRIAD = ("schema.json", "flows.json", "errors.json")
+TRIAD = ("schema.json", "schema.v2.json", "flows.json", "errors.json")
 #: Must match LLMS_TXT_BUDGET in the Makefile. Raised from the generator's
 #: 4000 default when docs/schema.json arrived and its operation catalog put
 #: the render 228 tokens over — the same deliberate exception

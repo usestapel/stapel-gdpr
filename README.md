@@ -24,13 +24,13 @@ pip install stapel-gdpr
 
 | Fact | Value |
 |---|---|
-| Version | `0.9.1` |
+| Version | `0.9.2` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 15 |
 | Config axes | 3 |
 | Usage surface | 18 |
 | Extension points | 4 |
-| Error codes | 60 |
+| Error codes | 61 |
 | Fleet dependencies | [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation

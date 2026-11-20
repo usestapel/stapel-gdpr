@@ -116,12 +116,12 @@ jobs:
         run: python -c "import stapel_gdpr; print('import OK')"
 
       - name: Install stapel-tools (несёт эмиттер, против которого меряет дрейф-гейт)
-        run: pip install stapel-tools --quiet
+        run: pip install "stapel-tools>=0.84.0,<1" --quiet
 
       - name: Install test dependencies
         # stapel-translate carries the builtin corpus every owned error string seeds
         # from; tests/test_error_i18n.py divides its coverage gate by it.
-        run: pip install pytest pytest-django pytest-cov stapel-translate
+        run: pip install pytest pytest-django pytest-cov stapel-translate celery "stapel-tools>=0.84.0,<1"
 
       - name: Tests with coverage
         run: |

@@ -170,6 +170,21 @@
     "owner": "stapel_core"
   },
   {
+    "code": "error.400.too_many_ids",
+    "status": 400,
+    "params": [
+      "requested",
+      "limit"
+    ],
+    "remediation": "fix_input",
+    "en": "Too many ids: {requested} requested, at most {limit} per batch request",
+    "owner": "stapel_core",
+    "param_types": {
+      "limit": "integer",
+      "requested": "integer"
+    }
+  },
+  {
     "code": "error.400.validation_error",
     "status": 400,
     "params": [],
@@ -469,11 +484,18 @@
     "code": "error.429.rate_limit",
     "status": 429,
     "params": [
+      "retry_after_display",
+      "retry_after",
       "retry_after_minutes"
     ],
     "remediation": "wait_and_retry",
-    "en": "Too many attempts. Try again in {retry_after_minutes} minutes.",
-    "owner": "stapel_core"
+    "en": "Too many attempts. Try again in {retry_after_display} ({retry_after} s, about {retry_after_minutes} min).",
+    "owner": "stapel_core",
+    "param_types": {
+      "retry_after": "integer",
+      "retry_after_display": "string",
+      "retry_after_minutes": "integer"
+    }
   },
   {
     "code": "error.429.too_many_requests",
